@@ -1,0 +1,77 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [
+  "setuptools",
+  "wheel",
+]
+
+[project]
+name = "aiognmi"
+description = "Asynchronous gNMI library in Python."
+readme = "README.md"
+keywords = [
+  "automation",
+  "network",
+  "network-automation",
+  "gnmi",
+  "gnmi-client",
+  "grpc",
+  "grpc-python",
+  "async",
+  "python",
+]
+requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Framework :: AsyncIO",
+]
+license = { file = "LICENSE" }
+authors = [
+  {email = "miaow2@yandex.ru"},
+  {name = "Artem Kotik"}
+]
+dependencies = [
+  "aiofile==3.8.8",
+  "grpcio==1.59.0",
+  "protobuf==4.24.4",
+]
+dynamic = [
+  "version",
+]
+
+[project.urls]
+repository = "https://github.com/miaow2/aiognmi/"
+homepage = "https://github.com/miaow2/aiognmi/"
+
+[tool.setuptools.packages]
+find = {}
+
+[tool.setuptools.dynamic]
+version = { attr = "aiognmi.__version__" }
+
+[project.optional-dependencies]
+dev = [
+  "ruff==0.3.4",
+]
+test = [
+  "pytest==8.1.1",
+]
+publish = [
+  "build==1.2.1",
+  "twine==4.0.2",
+]
+
+[tool.ruff]
+exclude = ["__pycache__", "proto"]
+lint.select = ["C", "E", "F", "I"]
+lint.ignore = ["C901"]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+addopts = "-p no:warnings -v"
