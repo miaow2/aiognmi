@@ -7,7 +7,7 @@ requires = [
 
 [project]
 name = "aiognmi"
-description = "Asynchronous gNMI library in Python."
+description = "Async, efficient and lightweight gNMI client written in Python."
 readme = "README.md"
 keywords = [
   "automation",
