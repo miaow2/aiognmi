@@ -1,6 +1,8 @@
+[![Supported Versions](https://img.shields.io/pypi/pyversions/aiognmi.svg)](https://pypi.org/project/aiognmi/)
+[![PyPI version](https://badge.fury.io/py/aiognmi.svg)](https://badge.fury.io/py/aiognmi)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/charliermarsh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![CI](https://github.com/miaow2/aiognmi/actions/workflows/commit.yaml/badge.svg?branch=main)](https://github.com/miaow2/aiognmi/actions)
+[![CI](https://github.com/miaow2/aiognmi/actions/workflows/commit.yaml/badge.svg?branch=develop)](https://github.com/miaow2/aiognmi/actions)
 
 # aiogNMI
 
