@@ -29,10 +29,16 @@ Repository contains protobuf files from [gNMI](https://github.com/openconfig/gnm
 
 ## Install
 
-Install with pip:
+Install with uv:
 
 ```bash
-pip install aiognmi
+uv add aiognmi
+```
+
+Or install into the current environment:
+
+```bash
+uv pip install aiognmi
 ```
 
 ## Examples
