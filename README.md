@@ -22,8 +22,9 @@ This Python library provides an efficient and lightweight gNMI client implementa
 * Arista EOS
 * Nokia SR OS
 
-Repository contains protobuf files from [gNMI](https://github.com/openconfig/gnmi/tree/master/proto) repo and based on gNMI release v0.10.0.
- Early gNMI version should work too, I've tested with 0.7.0 and it works well.
+Repository contains protobuf files from the [gNMI](https://github.com/openconfig/gnmi/tree/master/proto) repo,
+vendored from OpenConfig gNMI release v0.14.1. The upstream core `gnmi_service` proto option remains `0.10.0`.
+Earlier gNMI versions should work too; 0.7.0 has been tested successfully.
 
 > **_NOTE:_**  At this moment supporting of the secure connections (with encryption or certificate) is in alpha version. You can use them, but I don't guarantee stable work.
 

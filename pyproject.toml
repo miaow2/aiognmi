@@ -20,13 +20,12 @@ keywords = [
   "async",
   "python",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries :: Python Modules",
   "Framework :: AsyncIO",
 ]
@@ -36,9 +35,9 @@ authors = [
   {name = "Artem Kotik"}
 ]
 dependencies = [
-  "aiofile==3.8.8",
-  "grpcio==1.59.0",
-  "protobuf==4.24.4",
+  "aiofile==3.11.1",
+  "grpcio==1.81.1",
+  "protobuf==6.33.6",
 ]
 dynamic = [
   "version",
@@ -56,10 +55,11 @@ version = { attr = "aiognmi.__version__" }
 
 [project.optional-dependencies]
 dev = [
-  "ruff==0.3.4",
+  "grpcio-tools==1.81.1",
+  "ruff==0.15.19",
 ]
 test = [
-  "pytest==8.1.1",
+  "pytest==9.1.1",
 ]
 publish = [
   "build==1.2.1",
@@ -71,7 +71,7 @@ exclude = ["__pycache__", "proto"]
 lint.select = ["C", "E", "F", "I"]
 lint.ignore = ["C901"]
 line-length = 120
-target-version = "py310"
+target-version = "py312"
 
 [tool.pytest.ini_options]
 addopts = "-p no:warnings -v"
