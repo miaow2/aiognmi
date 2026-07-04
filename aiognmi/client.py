@@ -1,8 +1,9 @@
+import asyncio
 import logging
 import ssl
+from pathlib import Path
 from types import TracebackType
 
-from aiofile import async_open
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
@@ -21,6 +22,19 @@ from aiognmi.response import Response
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
 
 logger = logging.getLogger(__name__)
+
+
+async def _read_file(path: str) -> bytes:
+    """
+    Read a file's contents asynchronously without blocking the event loop
+
+    Args:
+        path: path to the file to read
+
+    Returns:
+        bytes: contents of the file
+    """
+    return await asyncio.to_thread(Path(path).read_bytes)
 
 
 class AsyncgNMIClient:
@@ -114,11 +128,11 @@ class AsyncgNMIClient:
             private_key = None
             cert_chain = None
             if self.path_root_cert and self.path_private_key and self.path_cert_chain:
-                root_cert = await async_open(self.path_root_cert, "rb").read()
-                private_key = await async_open(self.path_private_key, "rb").read()
-                cert_chain = await async_open(self.path_cert_chain, "rb").read()
+                root_cert = await _read_file(self.path_root_cert)
+                private_key = await _read_file(self.path_private_key)
+                cert_chain = await _read_file(self.path_cert_chain)
             elif self.path_cert_chain:
-                cert_chain = await async_open(self.path_cert_chain, "rb").read()
+                cert_chain = await _read_file(self.path_cert_chain)
             else:
                 cert_chain = ssl.get_server_certificate((self.host, self.port)).encode("utf-8")
 
@@ -143,7 +157,7 @@ class AsyncgNMIClient:
         try:
             encoding = Encoding.Value(encoding.upper())
         except ValueError:
-            logger.warn(f"Encoding {encoding} is not supported in gNMI request, setting {self.default_encoding}")
+            logger.warning(f"Encoding {encoding} is not supported in gNMI request, setting {self.default_encoding}")
             encoding = Encoding.Value(self.default_encoding)
 
         return encoding
