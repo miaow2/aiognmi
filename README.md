@@ -109,6 +109,42 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+## TLS
+
+> **_NOTE:_**  At this moment supporting of the secure connections (with encryption or certificate) is in alpha version. You can use them, but I don't guarantee stable work.
+
+Secure connections are controlled by the `verify` argument on `AsyncgNMIClient` (`insecure=True` bypasses TLS
+entirely and `verify` has no effect in that case):
+
+* `verify=True` (default) — the server certificate is actually verified. If `path_root_cert` is provided, it is
+  used as the trust anchor; otherwise the system trust store is used.
+* `verify=False` — the client fetches the target's certificate over the network and trusts it
+  (trust-on-first-use), overriding gRPC's hostname check to match the fetched certificate. A warning is logged
+  whenever verification is disabled.
+
+> **_Behavior change:_** earlier versions silently auto-fetched and trusted the server certificate even with the
+> default settings. If you relied on that behavior, pass `verify=False` explicitly — with the current default
+> (`verify=True`) an untrusted certificate will now cause the connection to fail.
+
+```python
+import asyncio
+
+from aiognmi import AsyncgNMIClient
+
+
+async def main():
+    async with AsyncgNMIClient(
+        host="test-1", port=6030, username="admin", password="admin", verify=False
+    ) as client:
+        resp = await client.get_capabilities()
+
+    print(resp.result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 ## Credits
 
 My work is inspired by these people:

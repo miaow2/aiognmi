@@ -4,6 +4,8 @@ import ssl
 from pathlib import Path
 from types import TracebackType
 
+from cryptography import x509
+from cryptography.x509.oid import NameOID
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
@@ -37,6 +39,42 @@ async def _read_file(path: str) -> bytes:
     return await asyncio.to_thread(Path(path).read_bytes)
 
 
+def _get_cert_hostname(cert_pem: bytes) -> str | None:
+    """
+    Extract an identity to use for hostname verification override from a PEM-encoded certificate
+
+    Priority order: first DNS name in the SubjectAlternativeName extension, then first IP address
+    in the SubjectAlternativeName extension, then the subject Common Name.
+
+    Args:
+        cert_pem: PEM-encoded certificate bytes
+
+    Returns:
+        str | None: the extracted identity, or None if none could be found
+    """
+    cert = x509.load_pem_x509_certificate(cert_pem)
+
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        san = None
+
+    if san is not None:
+        dns_names = san.get_values_for_type(x509.DNSName)
+        if dns_names:
+            return dns_names[0]
+
+        ip_addresses = san.get_values_for_type(x509.IPAddress)
+        if ip_addresses:
+            return str(ip_addresses[0])
+
+    common_names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if common_names:
+        return common_names[0].value
+
+    return None
+
+
 class AsyncgNMIClient:
     def __init__(
         self,
@@ -64,7 +102,8 @@ class AsyncgNMIClient:
             username: username for authentication
             password: password for authentication
             insecure: use SSl certificate for connection or not
-            verify: verify SSl certificate or not
+            verify: verify the server certificate; when False, the target's certificate is fetched and
+              trusted instead (trust-on-first-use)
             grpc_options: options for gRPC connection
             path_root_cert: path to root certificate for SSL authentication
             path_private_key: path to private key for SSL authentication
@@ -124,23 +163,36 @@ class AsyncgNMIClient:
         if self.insecure:
             self.channel = insecure_channel(target=self.target, options=self.get_grpc_options())
         else:
-            root_cert = None
-            private_key = None
-            cert_chain = None
-            if self.path_root_cert and self.path_private_key and self.path_cert_chain:
-                root_cert = await _read_file(self.path_root_cert)
-                private_key = await _read_file(self.path_private_key)
-                cert_chain = await _read_file(self.path_cert_chain)
-            elif self.path_cert_chain:
-                cert_chain = await _read_file(self.path_cert_chain)
-            else:
-                cert_chain = ssl.get_server_certificate((self.host, self.port)).encode("utf-8")
+            root_cert = await _read_file(self.path_root_cert) if self.path_root_cert else None
+            private_key = await _read_file(self.path_private_key) if self.path_private_key else None
+            cert_chain = await _read_file(self.path_cert_chain) if self.path_cert_chain else None
 
-            # TODO: add verify check
+            options = self.get_grpc_options()
+
+            if not self.verify:
+                logger.warning(
+                    f"Server certificate verification is disabled for {self.host}, "
+                    "the target's certificate will be fetched and trusted (trust-on-first-use)"
+                )
+                fetched_pem = await asyncio.to_thread(ssl.get_server_certificate, (self.host, self.port))
+                fetched = fetched_pem.encode("utf-8")
+
+                if root_cert is None:
+                    root_cert = fetched
+
+                hostname = _get_cert_hostname(fetched)
+                if hostname is None:
+                    logger.warning(f"Could not extract an identity from the fetched certificate for {self.host}")
+                else:
+                    options = options + [
+                        ("grpc.ssl_target_name_override", hostname),
+                        ("grpc.default_authority", hostname),
+                    ]
+
             credentials = ssl_channel_credentials(
                 root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
             )
-            self.channel = secure_channel(target=self.target, credentials=credentials, options=self.get_grpc_options())
+            self.channel = secure_channel(target=self.target, credentials=credentials, options=options)
 
         self.stub = gNMIStub(self.channel)
 

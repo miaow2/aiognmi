@@ -35,6 +35,7 @@ authors = [
   {name = "Artem Kotik"}
 ]
 dependencies = [
+  "cryptography==49.0.0",
   "grpcio==1.81.1",
   "protobuf==6.33.6",
 ]

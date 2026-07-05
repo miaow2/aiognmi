@@ -8,7 +8,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-
 RAW_BASE_URL = "https://raw.githubusercontent.com/openconfig/gnmi/{tag}/proto/{path}"
 PROTO_FILES = {
     "gnmi/gnmi.proto": Path("aiognmi/proto/gnmi/gnmi.proto"),
