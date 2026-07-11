@@ -247,7 +247,7 @@ class AsyncgNMIClient:
         if self.insecure:
             self.channel = insecure_channel(target=self.target, options=self.get_grpc_options())
         else:
-            root_cert = await _read_file(self.path_root_cert) if self.path_root_cert else None
+            root_cert = await _read_file(self.path_root_cert) if self.verify and self.path_root_cert else None
             private_key = await _read_file(self.path_private_key) if self.path_private_key else None
             cert_chain = await _read_file(self.path_cert_chain) if self.path_cert_chain else None
 
@@ -261,17 +261,19 @@ class AsyncgNMIClient:
                 fetched_pem = await asyncio.to_thread(ssl.get_server_certificate, (self.host, self.port))
                 fetched = fetched_pem.encode("utf-8")
 
-                if root_cert is None:
-                    root_cert = fetched
+                root_cert = fetched
 
                 hostname = _get_cert_hostname(fetched)
                 if hostname is None:
-                    logger.warning(f"Could not extract an identity from the fetched certificate for {self.host}")
-                else:
-                    options = options + [
-                        ("grpc.ssl_target_name_override", hostname),
-                        ("grpc.default_authority", hostname),
-                    ]
+                    raise ValueError(
+                        f"cannot use verify=False for {self.host}: the fetched server certificate "
+                        "contains no SAN or CN to verify against"
+                    )
+
+                options = options + [
+                    ("grpc.ssl_target_name_override", hostname),
+                    ("grpc.default_authority", hostname),
+                ]
 
             credentials = ssl_channel_credentials(
                 root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
@@ -499,7 +501,7 @@ class AsyncgNMIClient:
             try:
                 data_type = GetRequest.DataType.Value(data_type.upper())
             except ValueError:
-                logger.warn(f"Data type {data_type} is not supported in GetRequest, setting ALL")
+                logger.warning(f"Data type {data_type} is not supported in GetRequest, setting ALL")
                 data_type = GetRequest.DataType.Value("ALL")
 
         encoding = self.get_encoding(encoding)

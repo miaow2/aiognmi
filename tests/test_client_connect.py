@@ -13,19 +13,22 @@ from cryptography.x509.oid import NameOID
 from aiognmi import AsyncgNMIClient
 
 
-def _generate_self_signed_cert(common_name: str, san_dns: str | None = None) -> bytes:
+def _generate_self_signed_cert(common_name: str | None, san_dns: str | None = None) -> bytes:
     """
     Generate a self-signed certificate PEM for use in tests
 
     Args:
-        common_name: subject/issuer common name to embed in the certificate
+        common_name: subject/issuer common name to embed in the certificate, or None for an empty subject
         san_dns: optional DNS name to embed in the SubjectAlternativeName extension
 
     Returns:
         bytes: PEM-encoded certificate
     """
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
+    if common_name is None:
+        subject = issuer = x509.Name([])
+    else:
+        subject = issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
     builder = (
         x509.CertificateBuilder()
         .subject_name(subject)
@@ -189,6 +192,27 @@ def test_connect_verify_false_falls_back_to_common_name(
 @patch("aiognmi.client.ssl.get_server_certificate")
 @patch("aiognmi.client.secure_channel")
 @patch("aiognmi.client.ssl_channel_credentials")
+def test_connect_verify_false_with_identityless_cert_raises(
+    mock_ssl_channel_credentials: MagicMock,
+    mock_secure_channel: MagicMock,
+    mock_get_server_certificate: MagicMock,
+    make_client: Callable[..., AsyncgNMIClient],
+) -> None:
+    cert_pem = _generate_self_signed_cert(None)
+    mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
+
+    client = make_client(verify=False)
+
+    with pytest.raises(ValueError, match="contains no SAN or CN"):
+        asyncio.run(client.connect())
+
+    mock_ssl_channel_credentials.assert_not_called()
+    mock_secure_channel.assert_not_called()
+
+
+@patch("aiognmi.client.ssl.get_server_certificate")
+@patch("aiognmi.client.secure_channel")
+@patch("aiognmi.client.ssl_channel_credentials")
 def test_connect_verify_false_logs_warning(
     mock_ssl_channel_credentials: MagicMock,
     mock_secure_channel: MagicMock,
@@ -210,7 +234,7 @@ def test_connect_verify_false_logs_warning(
 @patch("aiognmi.client.ssl.get_server_certificate")
 @patch("aiognmi.client.secure_channel")
 @patch("aiognmi.client.ssl_channel_credentials")
-def test_connect_verify_false_with_root_cert_path_keeps_file_bytes(
+def test_connect_verify_false_with_root_cert_path_uses_fetched_certificate(
     mock_ssl_channel_credentials: MagicMock,
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
@@ -228,13 +252,47 @@ def test_connect_verify_false_with_root_cert_path_keeps_file_bytes(
     asyncio.run(client.connect())
 
     mock_ssl_channel_credentials.assert_called_once_with(
-        root_certificates=b"root-cert-bytes",
+        root_certificates=cert_pem,
         private_key=None,
         certificate_chain=None,
     )
     options = mock_secure_channel.call_args.kwargs["options"]
     assert ("grpc.ssl_target_name_override", "router.example.com") in options
     assert ("grpc.default_authority", "router.example.com") in options
+
+
+@patch("aiognmi.client.ssl.get_server_certificate")
+@patch("aiognmi.client.secure_channel")
+@patch("aiognmi.client.ssl_channel_credentials")
+def test_connect_verify_false_preserves_mtls_credentials(
+    mock_ssl_channel_credentials: MagicMock,
+    mock_secure_channel: MagicMock,
+    mock_get_server_certificate: MagicMock,
+    tmp_path: Path,
+    make_client: Callable[..., AsyncgNMIClient],
+) -> None:
+    private_key_path = tmp_path / "key.pem"
+    cert_chain_path = tmp_path / "chain.pem"
+    private_key_path.write_bytes(b"private-key-bytes")
+    cert_chain_path.write_bytes(b"cert-chain-bytes")
+
+    cert_pem = _generate_self_signed_cert("router-cn.example.com", san_dns="router.example.com")
+    mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
+
+    client = make_client(
+        verify=False,
+        path_private_key=str(private_key_path),
+        path_cert_chain=str(cert_chain_path),
+    )
+
+    asyncio.run(client.connect())
+
+    mock_ssl_channel_credentials.assert_called_once_with(
+        root_certificates=cert_pem,
+        private_key=b"private-key-bytes",
+        certificate_chain=b"cert-chain-bytes",
+    )
+    mock_secure_channel.assert_called_once()
 
 
 @patch("aiognmi.client.ssl.get_server_certificate")

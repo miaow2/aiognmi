@@ -190,7 +190,10 @@ entirely and `verify` has no effect in that case):
   used as the trust anchor; otherwise the system trust store is used.
 * `verify=False` — the client fetches the target's certificate over the network and trusts it
   (trust-on-first-use), overriding gRPC's hostname check to match the fetched certificate. A warning is logged
-  whenever verification is disabled.
+  whenever verification is disabled. In this mode `path_root_cert` is ignored, while `path_private_key` and
+  `path_cert_chain` continue to provide client credentials for mTLS. The target certificate must contain at
+  least a SAN or a subject CN; gRPC always verifies the certificate identity, so `connect()` raises
+  `ValueError` if no identity can be extracted from the fetched certificate.
 
 > **_Behavior change:_** earlier versions silently auto-fetched and trusted the server certificate even with the
 > default settings. If you relied on that behavior, pass `verify=False` explicitly — with the current default
