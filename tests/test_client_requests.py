@@ -31,10 +31,36 @@ def test_get_request_defaults_to_empty_extensions(client_with_mock_get: AsyncgNM
     assert list(request.extension) == []
 
 
-def test_set_request_includes_extensions(make_client: Callable[..., AsyncgNMIClient]) -> None:
+@pytest.mark.parametrize("depth", [0, 2])
+def test_get_request_includes_depth_extension(client_with_mock_get: AsyncgNMIClient, depth: int) -> None:
+    asyncio.run(client_with_mock_get.get(paths=["/interfaces/interface[name=Management0]"], depth=depth))
 
+    request = client_with_mock_get.stub.Get.call_args.args[0]
+    assert len(request.extension) == 1
+    assert request.extension[0].WhichOneof("ext") == "depth"
+    assert request.extension[0].depth.level == depth
+
+
+def test_get_depth_appends_to_caller_extensions(client_with_mock_get: AsyncgNMIClient) -> None:
+    extension = _make_extension()
+    extensions = [extension]
+
+    asyncio.run(client_with_mock_get.get(extensions=extensions, depth=2))
+
+    request = client_with_mock_get.stub.Get.call_args.args[0]
+    assert request.extension[0] == extension
+    assert request.extension[1].depth.level == 2
+    assert extensions == [extension]
+
+
+@pytest.mark.parametrize("depth", [-1, 1.5, "2", True])
+def test_get_rejects_invalid_depth(make_client: Callable[..., AsyncgNMIClient], depth: object) -> None:
     client = make_client(insecure=True)
-    client.stub = MagicMock()
+
+    with pytest.raises(ValueError, match="depth must be a non-negative integer"):
+        asyncio.run(client.get(depth=depth))
+
+
 def test_set_request_includes_extensions(client_with_mock_set: AsyncgNMIClient) -> None:
     extension = _make_extension()
 

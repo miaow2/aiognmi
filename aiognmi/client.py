@@ -6,6 +6,7 @@ from types import TracebackType
 
 from cryptography import x509
 from cryptography.x509.oid import NameOID
+from google.protobuf.duration_pb2 import Duration
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
@@ -26,7 +27,8 @@ from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
     CommitConfirm,
     CommitRequest,
     CommitSetRollbackDuration,
-from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import Extension
+    Depth,
+    Extension,
 )
 from aiognmi.response import Response
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
@@ -469,6 +471,7 @@ class AsyncgNMIClient:
         encoding: str | None = None,
         target: str | None = None,
         extensions: list[Extension] | None = None,
+        depth: int | None = None,
     ) -> Response:
         """
         Getting gNMI information from the specified paths
@@ -480,6 +483,7 @@ class AsyncgNMIClient:
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"]. Case insensitive (default "json")
             target: the name of the target
             extensions: prebuilt gNMI Extension protobuf messages to include in the request
+            depth: non-negative maximum subtree depth applied to every path in the request
 
         Returns:
             Response: response object with results
@@ -499,7 +503,11 @@ class AsyncgNMIClient:
                 data_type = GetRequest.DataType.Value("ALL")
 
         encoding = self.get_encoding(encoding)
-        extensions = extensions or []
+        extensions = list(extensions or [])
+        if depth is not None:
+            if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+                raise ValueError("depth must be a non-negative integer")
+            extensions.append(Extension(depth=Depth(level=depth)))
 
         request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding, extension=extensions)
         try:

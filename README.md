@@ -86,6 +86,20 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+Limit the returned subtree with the depth extension convenience option:
+
+```python
+resp = await client.get(
+    paths=[
+        "/interfaces/interface[name=Management0]",
+    ],
+    depth=2,
+)
+```
+
+The depth applies to every path in the Get request, matching the gNMI depth extension semantics. A depth of `0`
+means no depth limit.
+
 `Set` RPC
 
 ```python
