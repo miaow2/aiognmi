@@ -109,8 +109,35 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-Prebuilt gNMI extensions can be passed to `get()` and `set()` with the `extensions` argument. Feature-specific
-extension helpers, such as depth or commit-confirmed convenience APIs, are separate convenience APIs.
+### Commit-confirmed Set operations
+
+Pass a client-generated `commit_id` and a positive rollback duration (in seconds) to start a commit-confirmed Set.
+Use the same ID to confirm, cancel, or change the rollback duration of the active commit:
+
+```python
+# Start a commit that rolls back after 60 seconds unless it is confirmed.
+await client.set(
+    update=[{"path": "/system/config", "data": {"hostname": "router-1"}}],
+    commit_id="change-1",
+    commit_rollback_duration=60,
+)
+
+# Confirm the active commit.
+await client.set(commit_id="change-1", commit_confirm=True)
+
+# Or cancel the active commit before it is confirmed.
+await client.set(commit_id="change-1", commit_cancel=True)
+
+# Or extend its rollback window to 120 seconds.
+await client.set(commit_id="change-1", commit_set_rollback_duration=120)
+```
+
+Only one commit action can be sent in each Set request. Commit-confirmed support varies by target; unsupported or
+invalid operations are returned by the target through the usual gRPC/gNMI error handling.
+
+Prebuilt gNMI extensions can be passed to `get()` and `set()` with the `extensions` argument. Commit-confirmed
+operations are supported through the `set()` arguments shown above, and `get(depth=...)` builds the depth extension
+automatically. Other feature-specific extensions can still be passed as prebuilt `Extension` messages.
 
 ```python
 import asyncio

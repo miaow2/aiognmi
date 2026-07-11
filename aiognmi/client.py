@@ -20,7 +20,14 @@ from aiognmi.proto.gnmi.gnmi_pb2 import (
     SetResponse,
 )
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
+from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
+    Commit,
+    CommitCancel,
+    CommitConfirm,
+    CommitRequest,
+    CommitSetRollbackDuration,
 from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import Extension
+)
 from aiognmi.response import Response
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
 
@@ -74,6 +81,80 @@ def _get_cert_hostname(cert_pem: bytes) -> str | None:
         return common_names[0].value
 
     return None
+
+
+def _validate_positive_seconds(name: str, value: int) -> None:
+    """
+    Validate that a duration argument is a positive integer number of seconds
+
+    Args:
+        name: argument name used in the error message
+        value: value to validate
+
+    Raises:
+        ValueError: if the value is not a positive integer
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _build_commit_extension(
+    commit_id: str | None,
+    commit_rollback_duration: int | None,
+    commit_confirm: bool,
+    commit_cancel: bool,
+    commit_set_rollback_duration: int | None,
+) -> Extension | None:
+    """
+    Build a commit-confirmed Extension from the selected commit action
+
+    Args:
+        commit_id: client-provided identifier for a commit-confirmed action
+        commit_rollback_duration: positive rollback timeout in seconds; starts a commit-confirmed operation
+        commit_confirm: confirm the active commit identified by commit_id
+        commit_cancel: cancel the active commit identified by commit_id
+        commit_set_rollback_duration: positive timeout in seconds to set on the active commit
+
+    Returns:
+        Extension | None: the commit extension, or None when no commit options are used
+
+    Raises:
+        ValueError: if commit_id is missing, no single action is selected, or a duration is invalid
+    """
+    commit_actions = [
+        commit_rollback_duration is not None,
+        bool(commit_confirm),
+        bool(commit_cancel),
+        commit_set_rollback_duration is not None,
+    ]
+    if commit_id is None and not any(commit_actions):
+        return None
+
+    if not isinstance(commit_id, str) or not commit_id:
+        raise ValueError("commit_id is required for commit-confirmed actions")
+    if sum(commit_actions) != 1:
+        raise ValueError("exactly one commit-confirmed action must be selected")
+
+    if commit_rollback_duration is not None:
+        _validate_positive_seconds("commit_rollback_duration", commit_rollback_duration)
+        commit = Commit(
+            id=commit_id,
+            commit=CommitRequest(rollback_duration=Duration(seconds=commit_rollback_duration)),
+        )
+    elif commit_confirm:
+        commit = Commit(id=commit_id, confirm=CommitConfirm())
+    elif commit_cancel:
+        commit = Commit(id=commit_id, cancel=CommitCancel())
+    else:
+        _validate_positive_seconds("commit_set_rollback_duration", commit_set_rollback_duration)
+        commit = Commit(
+            id=commit_id,
+            set_rollback_duration=CommitSetRollbackDuration(
+                rollback_duration=Duration(seconds=commit_set_rollback_duration)
+            ),
+        )
+
+    return Extension(commit=commit)
 
 
 class AsyncgNMIClient:
@@ -440,6 +521,11 @@ class AsyncgNMIClient:
         encoding: str | None = None,
         target: str | None = None,
         extensions: list[Extension] | None = None,
+        commit_id: str | None = None,
+        commit_rollback_duration: int | None = None,
+        commit_confirm: bool = False,
+        commit_cancel: bool = False,
+        commit_set_rollback_duration: int | None = None,
     ) -> Response:
         """
         Configuring device with set command
@@ -454,6 +540,11 @@ class AsyncgNMIClient:
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"], default "json"
             target: the name of the target
             extensions: prebuilt gNMI Extension protobuf messages to include in the request
+            commit_id: client-provided identifier for a commit-confirmed action
+            commit_rollback_duration: positive rollback timeout in seconds; starts a commit-confirmed operation
+            commit_confirm: confirm the active commit identified by commit_id
+            commit_cancel: cancel the active commit identified by commit_id
+            commit_set_rollback_duration: positive timeout in seconds to set on the active commit
 
         Returns:
             Response: response object with results
@@ -476,7 +567,12 @@ class AsyncgNMIClient:
         if union_replace:
             union_replace_data = create_update_obj(union_replace, encoding)
 
-        extensions = extensions or []
+        extensions = list(extensions or [])
+        commit_extension = _build_commit_extension(
+            commit_id, commit_rollback_duration, commit_confirm, commit_cancel, commit_set_rollback_duration
+        )
+        if commit_extension is not None:
+            extensions.append(commit_extension)
 
         if union_replace_data:
             request = SetRequest(prefix=prefix, union_replace=union_replace_data, extension=extensions)
