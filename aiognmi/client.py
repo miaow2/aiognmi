@@ -20,6 +20,7 @@ from aiognmi.proto.gnmi.gnmi_pb2 import (
     SetResponse,
 )
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
+from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import Extension
 from aiognmi.response import Response
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
 
@@ -386,6 +387,7 @@ class AsyncgNMIClient:
         data_type: str | None = None,
         encoding: str | None = None,
         target: str | None = None,
+        extensions: list[Extension] | None = None,
     ) -> Response:
         """
         Getting gNMI information from the specified paths
@@ -396,6 +398,7 @@ class AsyncgNMIClient:
             data_type: type of data requested from the target. one of: ALL, CONFIG, STATE, OPERATIONAL (default "ALL")
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"]. Case insensitive (default "json")
             target: the name of the target
+            extensions: prebuilt gNMI Extension protobuf messages to include in the request
 
         Returns:
             Response: response object with results
@@ -415,8 +418,9 @@ class AsyncgNMIClient:
                 data_type = GetRequest.DataType.Value("ALL")
 
         encoding = self.get_encoding(encoding)
+        extensions = extensions or []
 
-        request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding)
+        request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding, extension=extensions)
         try:
             gnmi_response = await self.stub.Get(request, metadata=self.credentials)
         except AioRpcError as e:
@@ -435,6 +439,7 @@ class AsyncgNMIClient:
         union_replace: list | None = None,
         encoding: str | None = None,
         target: str | None = None,
+        extensions: list[Extension] | None = None,
     ) -> Response:
         """
         Configuring device with set command
@@ -448,6 +453,7 @@ class AsyncgNMIClient:
               is defined then a SetRequest will contain only union_replace operation
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"], default "json"
             target: the name of the target
+            extensions: prebuilt gNMI Extension protobuf messages to include in the request
 
         Returns:
             Response: response object with results
@@ -470,10 +476,18 @@ class AsyncgNMIClient:
         if union_replace:
             union_replace_data = create_update_obj(union_replace, encoding)
 
+        extensions = extensions or []
+
         if union_replace_data:
-            request = SetRequest(prefix=prefix, union_replace=union_replace_data)
+            request = SetRequest(prefix=prefix, union_replace=union_replace_data, extension=extensions)
         else:
-            request = SetRequest(prefix=prefix, delete=delete_paths, update=update_data, replace=replace_data)
+            request = SetRequest(
+                prefix=prefix,
+                delete=delete_paths,
+                update=update_data,
+                replace=replace_data,
+                extension=extensions,
+            )
         try:
             gnmi_response = await self.stub.Set(request, metadata=self.credentials)
         except AioRpcError as e:

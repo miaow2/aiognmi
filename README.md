@@ -109,6 +109,35 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+Prebuilt gNMI extensions can be passed to `get()` and `set()` with the `extensions` argument. Feature-specific
+extension helpers, such as depth or commit-confirmed convenience APIs, are separate convenience APIs.
+
+```python
+import asyncio
+
+from aiognmi import AsyncgNMIClient, Extension, ExtensionID, RegisteredExtension
+
+
+async def main():
+    extension = Extension(
+        registered_ext=RegisteredExtension(id=ExtensionID.Value("EID_EXPERIMENTAL"), msg=b"custom-payload")
+    )
+
+    async with AsyncgNMIClient(host="test-1", port=6030, username="admin", password="admin", insecure=True) as client:
+        resp = await client.get(
+            paths=[
+                "/interfaces/interface[name=Management0]",
+            ],
+            extensions=[extension],
+        )
+
+    print(resp.result)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
 ## TLS
 
 > **_NOTE:_**  At this moment supporting of the secure connections (with encryption or certificate) is in alpha version. You can use them, but I don't guarantee stable work.

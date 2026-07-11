@@ -1,5 +1,6 @@
 import asyncio
 import datetime
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -9,17 +10,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
-from aiognmi.client import AsyncgNMIClient
-
-
-def _make_client(**kwargs) -> AsyncgNMIClient:
-    return AsyncgNMIClient(
-        host="127.0.0.1",
-        port=57400,
-        username="user",
-        password="password",
-        **kwargs,
-    )
+from aiognmi import AsyncgNMIClient
 
 
 def _generate_self_signed_cert(common_name: str, san_dns: str | None = None) -> bytes:
@@ -54,7 +45,10 @@ def _generate_self_signed_cert(common_name: str, san_dns: str | None = None) -> 
 @patch("aiognmi.client.secure_channel")
 @patch("aiognmi.client.ssl_channel_credentials")
 def test_connect_with_all_cert_paths(
-    mock_ssl_channel_credentials: MagicMock, mock_secure_channel: MagicMock, tmp_path: Path
+    mock_ssl_channel_credentials: MagicMock,
+    mock_secure_channel: MagicMock,
+    tmp_path: Path,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     root_cert_path = tmp_path / "root.pem"
     private_key_path = tmp_path / "key.pem"
@@ -63,7 +57,7 @@ def test_connect_with_all_cert_paths(
     private_key_path.write_bytes(b"private-key-bytes")
     cert_chain_path.write_bytes(b"cert-chain-bytes")
 
-    client = _make_client(
+    client = make_client(
         path_root_cert=str(root_cert_path),
         path_private_key=str(private_key_path),
         path_cert_chain=str(cert_chain_path),
@@ -82,12 +76,15 @@ def test_connect_with_all_cert_paths(
 @patch("aiognmi.client.secure_channel")
 @patch("aiognmi.client.ssl_channel_credentials")
 def test_connect_with_cert_chain_only(
-    mock_ssl_channel_credentials: MagicMock, mock_secure_channel: MagicMock, tmp_path: Path
+    mock_ssl_channel_credentials: MagicMock,
+    mock_secure_channel: MagicMock,
+    tmp_path: Path,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     cert_chain_path = tmp_path / "chain.pem"
     cert_chain_path.write_bytes(b"cert-chain-bytes")
 
-    client = _make_client(path_cert_chain=str(cert_chain_path))
+    client = make_client(path_cert_chain=str(cert_chain_path))
 
     asyncio.run(client.connect())
 
@@ -102,11 +99,14 @@ def test_connect_with_cert_chain_only(
 @patch("aiognmi.client.secure_channel")
 @patch("aiognmi.client.ssl_channel_credentials")
 def test_connect_with_missing_cert_file_raises(
-    mock_ssl_channel_credentials: MagicMock, mock_secure_channel: MagicMock, tmp_path: Path
+    mock_ssl_channel_credentials: MagicMock,
+    mock_secure_channel: MagicMock,
+    tmp_path: Path,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     missing_path = tmp_path / "missing.pem"
 
-    client = _make_client(path_cert_chain=str(missing_path))
+    client = make_client(path_cert_chain=str(missing_path))
 
     with pytest.raises(FileNotFoundError):
         asyncio.run(client.connect())
@@ -122,8 +122,9 @@ def test_connect_verify_true_without_cert_paths_does_not_fetch(
     mock_ssl_channel_credentials: MagicMock,
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
-    client = _make_client(verify=True)
+    client = make_client(verify=True)
 
     asyncio.run(client.connect())
 
@@ -143,11 +144,12 @@ def test_connect_verify_false_without_cert_paths_fetches_and_overrides_hostname(
     mock_ssl_channel_credentials: MagicMock,
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     cert_pem = _generate_self_signed_cert("router-cn.example.com", san_dns="router.example.com")
     mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
 
-    client = _make_client(verify=False)
+    client = make_client(verify=False)
 
     asyncio.run(client.connect())
 
@@ -170,11 +172,12 @@ def test_connect_verify_false_falls_back_to_common_name(
     mock_ssl_channel_credentials: MagicMock,
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     cert_pem = _generate_self_signed_cert("router-cn.example.com")
     mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
 
-    client = _make_client(verify=False)
+    client = make_client(verify=False)
 
     asyncio.run(client.connect())
 
@@ -191,11 +194,12 @@ def test_connect_verify_false_logs_warning(
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
     caplog: pytest.LogCaptureFixture,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     cert_pem = _generate_self_signed_cert("router.example.com", san_dns="router.example.com")
     mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
 
-    client = _make_client(verify=False)
+    client = make_client(verify=False)
 
     with caplog.at_level("WARNING"):
         asyncio.run(client.connect())
@@ -211,6 +215,7 @@ def test_connect_verify_false_with_root_cert_path_keeps_file_bytes(
     mock_secure_channel: MagicMock,
     mock_get_server_certificate: MagicMock,
     tmp_path: Path,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
     root_cert_path = tmp_path / "root.pem"
     root_cert_path.write_bytes(b"root-cert-bytes")
@@ -218,7 +223,7 @@ def test_connect_verify_false_with_root_cert_path_keeps_file_bytes(
     cert_pem = _generate_self_signed_cert("router-cn.example.com", san_dns="router.example.com")
     mock_get_server_certificate.return_value = cert_pem.decode("utf-8")
 
-    client = _make_client(verify=False, path_root_cert=str(root_cert_path))
+    client = make_client(verify=False, path_root_cert=str(root_cert_path))
 
     asyncio.run(client.connect())
 
@@ -239,8 +244,9 @@ def test_connect_insecure_with_verify_false_skips_tls(
     mock_insecure_channel: MagicMock,
     mock_ssl_channel_credentials: MagicMock,
     mock_get_server_certificate: MagicMock,
+    make_client: Callable[..., AsyncgNMIClient],
 ) -> None:
-    client = _make_client(insecure=True, verify=False)
+    client = make_client(insecure=True, verify=False)
 
     asyncio.run(client.connect())
 
