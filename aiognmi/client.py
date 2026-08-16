@@ -1,8 +1,12 @@
+import asyncio
 import logging
 import ssl
+from pathlib import Path
 from types import TracebackType
 
-from aiofile import async_open
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from google.protobuf.duration_pb2 import Duration
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
@@ -17,10 +21,142 @@ from aiognmi.proto.gnmi.gnmi_pb2 import (
     SetResponse,
 )
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
+from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
+    Commit,
+    CommitCancel,
+    CommitConfirm,
+    CommitRequest,
+    CommitSetRollbackDuration,
+    Depth,
+    Extension,
+)
 from aiognmi.response import Response
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
 
 logger = logging.getLogger(__name__)
+
+
+async def _read_file(path: str) -> bytes:
+    """
+    Read a file's contents asynchronously without blocking the event loop
+
+    Args:
+        path: path to the file to read
+
+    Returns:
+        bytes: contents of the file
+    """
+    return await asyncio.to_thread(Path(path).read_bytes)
+
+
+def _get_cert_hostname(cert_pem: bytes) -> str | None:
+    """
+    Extract an identity to use for hostname verification override from a PEM-encoded certificate
+
+    Priority order: first DNS name in the SubjectAlternativeName extension, then first IP address
+    in the SubjectAlternativeName extension, then the subject Common Name.
+
+    Args:
+        cert_pem: PEM-encoded certificate bytes
+
+    Returns:
+        str | None: the extracted identity, or None if none could be found
+    """
+    cert = x509.load_pem_x509_certificate(cert_pem)
+
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        san = None
+
+    if san is not None:
+        dns_names = san.get_values_for_type(x509.DNSName)
+        if dns_names:
+            return dns_names[0]
+
+        ip_addresses = san.get_values_for_type(x509.IPAddress)
+        if ip_addresses:
+            return str(ip_addresses[0])
+
+    common_names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+    if common_names:
+        return common_names[0].value
+
+    return None
+
+
+def _validate_positive_seconds(name: str, value: int) -> None:
+    """
+    Validate that a duration argument is a positive integer number of seconds
+
+    Args:
+        name: argument name used in the error message
+        value: value to validate
+
+    Raises:
+        ValueError: if the value is not a positive integer
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _build_commit_extension(
+    commit_id: str | None,
+    commit_rollback_duration: int | None,
+    commit_confirm: bool,
+    commit_cancel: bool,
+    commit_set_rollback_duration: int | None,
+) -> Extension | None:
+    """
+    Build a commit-confirmed Extension from the selected commit action
+
+    Args:
+        commit_id: client-provided identifier for a commit-confirmed action
+        commit_rollback_duration: positive rollback timeout in seconds; starts a commit-confirmed operation
+        commit_confirm: confirm the active commit identified by commit_id
+        commit_cancel: cancel the active commit identified by commit_id
+        commit_set_rollback_duration: positive timeout in seconds to set on the active commit
+
+    Returns:
+        Extension | None: the commit extension, or None when no commit options are used
+
+    Raises:
+        ValueError: if commit_id is missing, no single action is selected, or a duration is invalid
+    """
+    commit_actions = [
+        commit_rollback_duration is not None,
+        bool(commit_confirm),
+        bool(commit_cancel),
+        commit_set_rollback_duration is not None,
+    ]
+    if commit_id is None and not any(commit_actions):
+        return None
+
+    if not isinstance(commit_id, str) or not commit_id:
+        raise ValueError("commit_id is required for commit-confirmed actions")
+    if sum(commit_actions) != 1:
+        raise ValueError("exactly one commit-confirmed action must be selected")
+
+    if commit_rollback_duration is not None:
+        _validate_positive_seconds("commit_rollback_duration", commit_rollback_duration)
+        commit = Commit(
+            id=commit_id,
+            commit=CommitRequest(rollback_duration=Duration(seconds=commit_rollback_duration)),
+        )
+    elif commit_confirm:
+        commit = Commit(id=commit_id, confirm=CommitConfirm())
+    elif commit_cancel:
+        commit = Commit(id=commit_id, cancel=CommitCancel())
+    else:
+        _validate_positive_seconds("commit_set_rollback_duration", commit_set_rollback_duration)
+        commit = Commit(
+            id=commit_id,
+            set_rollback_duration=CommitSetRollbackDuration(
+                rollback_duration=Duration(seconds=commit_set_rollback_duration)
+            ),
+        )
+
+    return Extension(commit=commit)
 
 
 class AsyncgNMIClient:
@@ -50,7 +186,8 @@ class AsyncgNMIClient:
             username: username for authentication
             password: password for authentication
             insecure: use SSl certificate for connection or not
-            verify: verify SSl certificate or not
+            verify: verify the server certificate; when False, the target's certificate is fetched and
+              trusted instead (trust-on-first-use)
             grpc_options: options for gRPC connection
             path_root_cert: path to root certificate for SSL authentication
             path_private_key: path to private key for SSL authentication
@@ -110,23 +247,38 @@ class AsyncgNMIClient:
         if self.insecure:
             self.channel = insecure_channel(target=self.target, options=self.get_grpc_options())
         else:
-            root_cert = None
-            private_key = None
-            cert_chain = None
-            if self.path_root_cert and self.path_private_key and self.path_cert_chain:
-                root_cert = await async_open(self.path_root_cert, "rb").read()
-                private_key = await async_open(self.path_private_key, "rb").read()
-                cert_chain = await async_open(self.path_cert_chain, "rb").read()
-            elif self.path_cert_chain:
-                cert_chain = await async_open(self.path_cert_chain, "rb").read()
-            else:
-                cert_chain = ssl.get_server_certificate((self.host, self.port)).encode("utf-8")
+            root_cert = await _read_file(self.path_root_cert) if self.verify and self.path_root_cert else None
+            private_key = await _read_file(self.path_private_key) if self.path_private_key else None
+            cert_chain = await _read_file(self.path_cert_chain) if self.path_cert_chain else None
 
-            # TODO: add verify check
+            options = self.get_grpc_options()
+
+            if not self.verify:
+                logger.warning(
+                    f"Server certificate verification is disabled for {self.host}, "
+                    "the target's certificate will be fetched and trusted (trust-on-first-use)"
+                )
+                fetched_pem = await asyncio.to_thread(ssl.get_server_certificate, (self.host, self.port))
+                fetched = fetched_pem.encode("utf-8")
+
+                root_cert = fetched
+
+                hostname = _get_cert_hostname(fetched)
+                if hostname is None:
+                    raise ValueError(
+                        f"cannot use verify=False for {self.host}: the fetched server certificate "
+                        "contains no SAN or CN to verify against"
+                    )
+
+                options = options + [
+                    ("grpc.ssl_target_name_override", hostname),
+                    ("grpc.default_authority", hostname),
+                ]
+
             credentials = ssl_channel_credentials(
                 root_certificates=root_cert, private_key=private_key, certificate_chain=cert_chain
             )
-            self.channel = secure_channel(target=self.target, credentials=credentials, options=self.get_grpc_options())
+            self.channel = secure_channel(target=self.target, credentials=credentials, options=options)
 
         self.stub = gNMIStub(self.channel)
 
@@ -143,7 +295,7 @@ class AsyncgNMIClient:
         try:
             encoding = Encoding.Value(encoding.upper())
         except ValueError:
-            logger.warn(f"Encoding {encoding} is not supported in gNMI request, setting {self.default_encoding}")
+            logger.warning(f"Encoding {encoding} is not supported in gNMI request, setting {self.default_encoding}")
             encoding = Encoding.Value(self.default_encoding)
 
         return encoding
@@ -320,6 +472,8 @@ class AsyncgNMIClient:
         data_type: str | None = None,
         encoding: str | None = None,
         target: str | None = None,
+        extensions: list[Extension] | None = None,
+        depth: int | None = None,
     ) -> Response:
         """
         Getting gNMI information from the specified paths
@@ -330,6 +484,8 @@ class AsyncgNMIClient:
             data_type: type of data requested from the target. one of: ALL, CONFIG, STATE, OPERATIONAL (default "ALL")
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"]. Case insensitive (default "json")
             target: the name of the target
+            extensions: prebuilt gNMI Extension protobuf messages to include in the request
+            depth: non-negative maximum subtree depth applied to every path in the request
 
         Returns:
             Response: response object with results
@@ -345,12 +501,17 @@ class AsyncgNMIClient:
             try:
                 data_type = GetRequest.DataType.Value(data_type.upper())
             except ValueError:
-                logger.warn(f"Data type {data_type} is not supported in GetRequest, setting ALL")
+                logger.warning(f"Data type {data_type} is not supported in GetRequest, setting ALL")
                 data_type = GetRequest.DataType.Value("ALL")
 
         encoding = self.get_encoding(encoding)
+        extensions = list(extensions or [])
+        if depth is not None:
+            if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+                raise ValueError("depth must be a non-negative integer")
+            extensions.append(Extension(depth=Depth(level=depth)))
 
-        request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding)
+        request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding, extension=extensions)
         try:
             gnmi_response = await self.stub.Get(request, metadata=self.credentials)
         except AioRpcError as e:
@@ -369,6 +530,12 @@ class AsyncgNMIClient:
         union_replace: list | None = None,
         encoding: str | None = None,
         target: str | None = None,
+        extensions: list[Extension] | None = None,
+        commit_id: str | None = None,
+        commit_rollback_duration: int | None = None,
+        commit_confirm: bool = False,
+        commit_cancel: bool = False,
+        commit_set_rollback_duration: int | None = None,
     ) -> Response:
         """
         Configuring device with set command
@@ -382,6 +549,12 @@ class AsyncgNMIClient:
               is defined then a SetRequest will contain only union_replace operation
             encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"], default "json"
             target: the name of the target
+            extensions: prebuilt gNMI Extension protobuf messages to include in the request
+            commit_id: client-provided identifier for a commit-confirmed action
+            commit_rollback_duration: positive rollback timeout in seconds; starts a commit-confirmed operation
+            commit_confirm: confirm the active commit identified by commit_id
+            commit_cancel: cancel the active commit identified by commit_id
+            commit_set_rollback_duration: positive timeout in seconds to set on the active commit
 
         Returns:
             Response: response object with results
@@ -404,10 +577,23 @@ class AsyncgNMIClient:
         if union_replace:
             union_replace_data = create_update_obj(union_replace, encoding)
 
+        extensions = list(extensions or [])
+        commit_extension = _build_commit_extension(
+            commit_id, commit_rollback_duration, commit_confirm, commit_cancel, commit_set_rollback_duration
+        )
+        if commit_extension is not None:
+            extensions.append(commit_extension)
+
         if union_replace_data:
-            request = SetRequest(prefix=prefix, union_replace=union_replace_data)
+            request = SetRequest(prefix=prefix, union_replace=union_replace_data, extension=extensions)
         else:
-            request = SetRequest(prefix=prefix, delete=delete_paths, update=update_data, replace=replace_data)
+            request = SetRequest(
+                prefix=prefix,
+                delete=delete_paths,
+                update=update_data,
+                replace=replace_data,
+                extension=extensions,
+            )
         try:
             gnmi_response = await self.stub.Set(request, metadata=self.credentials)
         except AioRpcError as e:
