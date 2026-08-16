@@ -63,7 +63,7 @@ test = [
 ]
 publish = [
   "build==1.2.1",
-  "twine==4.0.2",
+  "twine==7.0.0",
 ]
 
 [tool.ruff]
