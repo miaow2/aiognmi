@@ -1,6 +1,7 @@
 from aiognmi.client import AsyncgNMIClient
 from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import Extension, ExtensionID, RegisteredExtension
+from aiognmi.subscribe import SubscribeStream
 
 __version__ = "0.2.0"
 
-__all__ = ("AsyncgNMIClient", "Extension", "ExtensionID", "RegisteredExtension")
+__all__ = ("AsyncgNMIClient", "Extension", "ExtensionID", "RegisteredExtension", "SubscribeStream")

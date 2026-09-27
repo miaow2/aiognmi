@@ -19,6 +19,7 @@ from aiognmi.proto.gnmi.gnmi_pb2 import (
     GetResponse,
     SetRequest,
     SetResponse,
+    SubscriptionList,
 )
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
 from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
@@ -31,6 +32,7 @@ from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
     Extension,
 )
 from aiognmi.response import Response
+from aiognmi.subscribe import SubscribeStream, build_subscription_list
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_notification
 
 logger = logging.getLogger(__name__)
@@ -426,6 +428,24 @@ class AsyncgNMIClient:
 
         return response
 
+    def _pre_subscribe(self) -> None:
+        """
+        Log the subscribe request
+        """
+        logger.info(f"subscribe for {self.host} is requested")
+
+    def _post_subscribe(self, subscription_list: SubscriptionList) -> SubscribeStream:
+        """
+        Build the stream that will send the SubscriptionList once entered
+
+        Args:
+            subscription_list: gNMI SubscriptionList to send in the initial SubscribeRequest
+
+        Returns:
+            SubscribeStream: stream ready to be entered with `async with`
+        """
+        return SubscribeStream(self.stub, self.credentials, subscription_list)
+
     async def get_capabilities(self) -> Response:
         """
         Getting gNMI capabilities from device
@@ -580,3 +600,36 @@ class AsyncgNMIClient:
             return response
 
         return self._post_set(gnmi_response, response)
+
+    def subscribe(self, subscriptions: list[str], mode: str | None = None) -> SubscribeStream:
+        """
+        Subscribe to a set of gNMI paths on the target
+
+        This is a plain, non-async method: nothing network-related happens here. The gRPC call is
+        opened, and the initial SubscribeRequest written, when the returned stream is entered with
+        `async with`.
+
+        Args:
+            subscriptions: list of path strings to subscribe to
+            mode: how the whole request is delivered - "stream" (default), "once", or "poll"
+
+        Returns:
+            SubscribeStream: async context manager and async iterator over Notifications
+
+        Raises:
+            ValueError: if subscriptions is missing or empty
+        """
+        self._pre_subscribe()
+
+        if not subscriptions:
+            raise ValueError("subscriptions must not be empty")
+
+        prefix = create_gnmi_path(None, self.target)
+        subscription_list = build_subscription_list(
+            prefix=prefix,
+            paths=subscriptions,
+            mode=mode,
+            encoding=self.get_encoding(None),
+        )
+
+        return self._post_subscribe(subscription_list)
