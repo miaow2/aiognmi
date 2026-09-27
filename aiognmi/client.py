@@ -102,6 +102,29 @@ def _validate_positive_seconds(name: str, value: int) -> None:
         raise ValueError(f"{name} must be a positive integer")
 
 
+def _build_extensions(extensions: list[Extension] | None, depth: int | None) -> list[Extension]:
+    """
+    Copy caller-supplied extensions and append a Depth extension when requested
+
+    Args:
+        extensions: prebuilt gNMI Extension protobuf messages; the caller's list is never mutated
+        depth: non-negative maximum subtree depth, or None to add no Depth extension
+
+    Returns:
+        list[Extension]: a new list with the caller's extensions followed by the Depth extension, if any
+
+    Raises:
+        ValueError: if depth is a bool, not an integer, or negative
+    """
+    extensions = list(extensions or [])
+    if depth is not None:
+        if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+            raise ValueError("depth must be a non-negative integer")
+        extensions.append(Extension(depth=Depth(level=depth)))
+
+    return extensions
+
+
 def _build_commit_extension(
     commit_id: str | None,
     commit_rollback_duration: int | None,
@@ -434,17 +457,20 @@ class AsyncgNMIClient:
         """
         logger.info(f"subscribe for {self.host} is requested")
 
-    def _post_subscribe(self, subscription_list: SubscriptionList) -> SubscribeStream:
+    def _post_subscribe(
+        self, subscription_list: SubscriptionList, extensions: list[Extension] | None = None
+    ) -> SubscribeStream:
         """
         Build the stream that will send the SubscriptionList once entered
 
         Args:
             subscription_list: gNMI SubscriptionList to send in the initial SubscribeRequest
+            extensions: gNMI Extension messages to send in the initial SubscribeRequest
 
         Returns:
             SubscribeStream: stream ready to be entered with `async with`
         """
-        return SubscribeStream(self.stub, self.credentials, subscription_list)
+        return SubscribeStream(self.stub, self.credentials, subscription_list, extensions)
 
     async def get_capabilities(self) -> Response:
         """
@@ -503,11 +529,7 @@ class AsyncgNMIClient:
                 data_type = GetRequest.DataType.Value("ALL")
 
         encoding = self.get_encoding(encoding)
-        extensions = list(extensions or [])
-        if depth is not None:
-            if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
-                raise ValueError("depth must be a non-negative integer")
-            extensions.append(Extension(depth=Depth(level=depth)))
+        extensions = _build_extensions(extensions, depth)
 
         request = GetRequest(prefix=prefix, path=paths, type=data_type, encoding=encoding, extension=extensions)
         try:
@@ -609,6 +631,15 @@ class AsyncgNMIClient:
         sample_interval: int | float | None = None,
         heartbeat_interval: int | float | None = None,
         suppress_redundant: bool = False,
+        prefix: str | None = None,
+        target: str | None = None,
+        encoding: str | None = None,
+        updates_only: bool = False,
+        allow_aggregation: bool = False,
+        qos: int | None = None,
+        use_models: list[dict] | None = None,
+        extensions: list[Extension] | None = None,
+        depth: int | None = None,
     ) -> SubscribeStream:
         """
         Subscribe to a set of gNMI paths on the target
@@ -635,30 +666,49 @@ class AsyncgNMIClient:
               own
             suppress_redundant: default `suppress_redundant` flag applied per Subscription, for any
               item that omits its own
+            prefix: prefix for paths, handled as in `get()`
+            target: the name of the target carried in the prefix Path (defaults to `host:port`)
+            encoding: string one of ["json" "bytes" "proto" "ascii" "json_ietf"]. Case insensitive
+              (default "json")
+            updates_only: ask the target to skip the initial dump and send only subsequent changes;
+              the Sync Response - and therefore `synced` - then arrives almost immediately
+            allow_aggregation: allow the target to aggregate Notifications where the schema permits
+            qos: non-negative integer DSCP value the target should mark telemetry with
+            use_models: schema models the target should use, as dicts with keys `name`,
+              `organization`, `version` - the same shape the Capabilities result produces
+            extensions: prebuilt gNMI Extension protobuf messages to include in the request
+            depth: non-negative maximum subtree depth, appended as a Depth extension after
+              `extensions` (the caller's list is not mutated)
 
         Returns:
             SubscribeStream: async context manager and async iterator over Notifications
 
         Raises:
-            ValueError: if subscriptions is missing or empty, if a dict item is missing `path`, or
-              if a `sample_interval`/`heartbeat_interval` (method-level or per-item) is negative,
-              non-numeric, a `bool`, or a non-finite float
+            ValueError: if subscriptions is missing or empty, if a dict item is missing `path`, if
+              a `sample_interval`/`heartbeat_interval` (method-level or per-item) is negative,
+              non-numeric, a `bool`, or a non-finite float, or if `qos` or `depth` is negative,
+              non-integer, or a `bool`
         """
         self._pre_subscribe()
 
         if not subscriptions:
             raise ValueError("subscriptions must not be empty")
 
-        prefix = create_gnmi_path(None, self.target)
+        prefix = create_gnmi_path(prefix, target or self.target)
+        extensions = _build_extensions(extensions, depth)
         subscription_list = build_subscription_list(
             prefix=prefix,
             subscriptions=subscriptions,
             mode=mode,
-            encoding=self.get_encoding(None),
+            encoding=self.get_encoding(encoding),
             stream_mode=stream_mode,
             sample_interval=sample_interval,
             heartbeat_interval=heartbeat_interval,
             suppress_redundant=suppress_redundant,
+            updates_only=updates_only,
+            allow_aggregation=allow_aggregation,
+            qos=qos,
+            use_models=use_models,
         )
 
-        return self._post_subscribe(subscription_list)
+        return self._post_subscribe(subscription_list, extensions)

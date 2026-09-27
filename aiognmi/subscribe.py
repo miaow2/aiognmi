@@ -7,8 +7,17 @@ from grpc.aio import AioRpcError, Metadata
 
 from aiognmi.models import Notification
 from aiognmi.proto.gnmi.gnmi_pb2 import Error as SubscribeError
-from aiognmi.proto.gnmi.gnmi_pb2 import Path, SubscribeRequest, Subscription, SubscriptionList, SubscriptionMode
+from aiognmi.proto.gnmi.gnmi_pb2 import (
+    ModelData,
+    Path,
+    QOSMarking,
+    SubscribeRequest,
+    Subscription,
+    SubscriptionList,
+    SubscriptionMode,
+)
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
+from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import Extension
 from aiognmi.utils import create_gnmi_path, parse_notification
 
 logger = logging.getLogger(__name__)
@@ -83,6 +92,28 @@ def _seconds_to_nanoseconds(seconds: int | float | None, name: str) -> int:
     return round(seconds * 1_000_000_000)
 
 
+def _build_qos(qos: int | None) -> QOSMarking | None:
+    """
+    Validate a DSCP value and wrap it in a `QOSMarking` message
+
+    Args:
+        qos: non-negative integer DSCP value; `None` leaves the `qos` field unset
+
+    Returns:
+        QOSMarking | None: the marking message, or `None` if `qos` is `None`
+
+    Raises:
+        ValueError: if `qos` is a `bool`, not an integer, or negative
+    """
+    if qos is None:
+        return None
+
+    if isinstance(qos, bool) or not isinstance(qos, int) or qos < 0:
+        raise ValueError("qos must be a non-negative integer")
+
+    return QOSMarking(marking=qos)
+
+
 def _build_subscription(
     item: str | dict,
     stream_mode: str | None,
@@ -138,6 +169,10 @@ def build_subscription_list(
     sample_interval: int | float | None = None,
     heartbeat_interval: int | float | None = None,
     suppress_redundant: bool = False,
+    updates_only: bool = False,
+    allow_aggregation: bool = False,
+    qos: int | None = None,
+    use_models: list[dict] | None = None,
 ) -> SubscriptionList:
     """
     Build a `SubscriptionList` from path strings/dicts and method-level per-Subscription defaults
@@ -157,13 +192,19 @@ def build_subscription_list(
         heartbeat_interval: default heartbeat interval in seconds (`int` or `float`; fractional
           seconds are allowed), converted internally to nanoseconds, for any item that omits its own
         suppress_redundant: default `suppress_redundant` flag for any item that omits its own
+        updates_only: ask the target to skip the initial dump and send only subsequent changes
+        allow_aggregation: allow the target to aggregate Notifications where the schema permits
+        qos: non-negative integer DSCP value for the target to mark telemetry with; unset if `None`
+        use_models: schema models the target should use, as dicts with keys `name`,
+          `organization`, `version` - the same shape the Capabilities result produces
 
     Returns:
         SubscriptionList: the built SubscriptionList message
 
     Raises:
-        ValueError: if a dict item is missing `path`, or if a `sample_interval`/`heartbeat_interval`
-          (method-level or per-item) is negative, non-numeric, a `bool`, or a non-finite float
+        ValueError: if a dict item is missing `path`, if a `sample_interval`/`heartbeat_interval`
+          (method-level or per-item) is negative, non-numeric, a `bool`, or a non-finite float, if
+          `qos` is negative, non-integer, or a `bool`, or if a `use_models` dict has an unknown key
     """
     subscription_list = [
         _build_subscription(item, stream_mode, sample_interval, heartbeat_interval, suppress_redundant)
@@ -175,6 +216,10 @@ def build_subscription_list(
         subscription=subscription_list,
         mode=_get_subscription_list_mode(mode),
         encoding=encoding,
+        updates_only=bool(updates_only),
+        allow_aggregation=bool(allow_aggregation),
+        qos=_build_qos(qos),
+        use_models=[ModelData(**model) for model in use_models or []],
     )
 
 
@@ -206,16 +251,24 @@ class SubscribeStream:
     Leaving the `async with` block - including via `break` or an exception - cancels the call.
     """
 
-    def __init__(self, stub: gNMIStub, credentials: list[tuple[str, str]], subscription_list: SubscriptionList) -> None:
+    def __init__(
+        self,
+        stub: gNMIStub,
+        credentials: list[tuple[str, str]],
+        subscription_list: SubscriptionList,
+        extensions: list[Extension] | None = None,
+    ) -> None:
         """
         Args:
             stub: gNMI gRPC stub used to open the Subscribe call
             credentials: metadata passed to the Subscribe call
             subscription_list: SubscriptionList to send in the initial SubscribeRequest
+            extensions: gNMI Extension messages to send in the initial SubscribeRequest
         """
         self._stub = stub
         self._credentials = credentials
         self._subscription_list = subscription_list
+        self._extensions = list(extensions or [])
         self._call = None
         self._entered = False
         self._closed = False
@@ -243,7 +296,7 @@ class SubscribeStream:
         """
         self._call = self._stub.Subscribe(metadata=self._credentials)
         try:
-            await self._call.write(SubscribeRequest(subscribe=self._subscription_list))
+            await self._call.write(SubscribeRequest(subscribe=self._subscription_list, extension=self._extensions))
         except BaseException:
             self._call.cancel()
             raise

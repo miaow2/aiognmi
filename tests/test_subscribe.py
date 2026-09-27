@@ -5,17 +5,18 @@ import grpc
 import pytest
 from grpc.aio import AioRpcError
 
-from aiognmi import AsyncgNMIClient, SubscribeStream
+from aiognmi import AsyncgNMIClient, Extension, ExtensionID, RegisteredExtension, SubscribeStream
 from aiognmi.models import Notification as NotificationModel
-from aiognmi.proto.gnmi.gnmi_pb2 import Error as ProtoError
-from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
 from aiognmi.proto.gnmi.gnmi_pb2 import (
+    Encoding,
     SubscribeRequest,
     SubscribeResponse,
     Subscription,
     SubscriptionList,
     SubscriptionMode,
 )
+from aiognmi.proto.gnmi.gnmi_pb2 import Error as ProtoError
+from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
 from aiognmi.utils import create_gnmi_path, parse_notification
 
 
@@ -506,3 +507,179 @@ def test_iterating_after_exit_raises_runtime_error(
 
     with pytest.raises(RuntimeError, match="closed"):
         asyncio.run(_run())
+
+
+def _make_extension(payload: bytes = b"payload") -> Extension:
+    return Extension(
+        registered_ext=RegisteredExtension(id=ExtensionID.Value("EID_EXPERIMENTAL"), msg=payload),
+    )
+
+
+def _written_request(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], **kwargs: object
+) -> tuple[AsyncgNMIClient, SubscribeRequest]:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(**kwargs):
+            pass
+
+    asyncio.run(_run())
+
+    assert len(call.written) == 1
+    return client, call.written[0]
+
+
+@pytest.mark.parametrize("mode", ["stream", "once", "poll"])
+def test_subscribe_prefix_and_target_reach_request_like_get(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], mode: str
+) -> None:
+    _, request = _written_request(
+        make_subscribe_client,
+        subscriptions=["state/counters"],
+        mode=mode,
+        prefix="/interfaces/interface[name=eth0]",
+        target="leaf1",
+    )
+
+    assert request.subscribe.prefix == create_gnmi_path("/interfaces/interface[name=eth0]", "leaf1")
+
+
+def test_subscribe_prefix_defaults_target_to_client_target(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    client, request = _written_request(make_subscribe_client, subscriptions=["state"], prefix="/interfaces")
+
+    assert request.subscribe.prefix == create_gnmi_path("/interfaces", client.target)
+
+
+@pytest.mark.parametrize(
+    ("encoding", "expected"),
+    [
+        (None, Encoding.Value("JSON")),
+        ("json_ietf", Encoding.Value("JSON_IETF")),
+        ("PROTO", Encoding.Value("PROTO")),
+    ],
+)
+def test_subscribe_encoding_reaches_subscription_list(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], encoding: str | None, expected: int
+) -> None:
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], encoding=encoding)
+
+    assert request.subscribe.encoding == expected
+
+
+def test_subscribe_unknown_encoding_warns_and_falls_back_to_client_default(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level("WARNING"):
+        _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], encoding="bogus")
+
+    assert request.subscribe.encoding == Encoding.Value("JSON")
+    assert any("bogus" in record.message for record in caplog.records)
+
+
+def test_subscribe_subscription_list_options_default_to_unset(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"])
+
+    subscription_list = request.subscribe
+    assert subscription_list.updates_only is False
+    assert subscription_list.allow_aggregation is False
+    assert not subscription_list.HasField("qos")
+    assert list(subscription_list.use_models) == []
+    assert list(request.extension) == []
+
+
+@pytest.mark.parametrize("mode", ["stream", "once", "poll"])
+def test_subscribe_subscription_list_options_reach_request(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], mode: str
+) -> None:
+    use_models = [
+        {"name": "openconfig-interfaces", "organization": "OpenConfig working group", "version": "3.0.0"},
+        {"name": "openconfig-system", "organization": "OpenConfig working group", "version": "1.0.0"},
+    ]
+
+    _, request = _written_request(
+        make_subscribe_client,
+        subscriptions=["/interfaces"],
+        mode=mode,
+        updates_only=True,
+        allow_aggregation=True,
+        qos=46,
+        use_models=use_models,
+    )
+
+    subscription_list = request.subscribe
+    assert subscription_list.updates_only is True
+    assert subscription_list.allow_aggregation is True
+    assert subscription_list.qos.marking == 46
+    assert [
+        {"name": model.name, "organization": model.organization, "version": model.version}
+        for model in subscription_list.use_models
+    ] == use_models
+
+
+def test_subscribe_qos_zero_is_sent(make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]]) -> None:
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], qos=0)
+
+    assert request.subscribe.HasField("qos")
+    assert request.subscribe.qos.marking == 0
+
+
+def test_subscribe_use_models_dict_with_unknown_key_raises_value_error(
+    make_client: Callable[..., AsyncgNMIClient],
+) -> None:
+    client = make_client(insecure=True)
+
+    with pytest.raises(ValueError):
+        client.subscribe(subscriptions=["/interfaces"], use_models=[{"name": "openconfig-interfaces", "bogus": "x"}])
+
+
+def test_subscribe_request_includes_extensions(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    extension = _make_extension()
+
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], extensions=[extension])
+
+    assert list(request.extension) == [extension]
+
+
+@pytest.mark.parametrize("depth", [0, 2])
+def test_subscribe_request_includes_depth_extension(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], depth: int
+) -> None:
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], depth=depth)
+
+    assert len(request.extension) == 1
+    assert request.extension[0].WhichOneof("ext") == "depth"
+    assert request.extension[0].depth.level == depth
+
+
+def test_subscribe_depth_appends_to_caller_extensions(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    extension = _make_extension()
+    extensions = [extension]
+
+    _, request = _written_request(make_subscribe_client, subscriptions=["/interfaces"], extensions=extensions, depth=2)
+
+    assert request.extension[0] == extension
+    assert request.extension[1].depth.level == 2
+    assert extensions == [extension]
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, "2", True])
+@pytest.mark.parametrize("argument", ["qos", "depth"])
+def test_subscribe_rejects_invalid_qos_and_depth(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], argument: str, value: object
+) -> None:
+    client, _ = make_subscribe_client([])
+
+    with pytest.raises(ValueError, match=f"{argument} must be a non-negative integer"):
+        client.subscribe(subscriptions=["/interfaces"], **{argument: value})
+
+    client.stub.Subscribe.assert_not_called()
