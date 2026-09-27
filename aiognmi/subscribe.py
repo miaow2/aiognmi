@@ -10,6 +10,7 @@ from aiognmi.proto.gnmi.gnmi_pb2 import Error as SubscribeError
 from aiognmi.proto.gnmi.gnmi_pb2 import (
     ModelData,
     Path,
+    Poll,
     QOSMarking,
     SubscribeRequest,
     Subscription,
@@ -249,6 +250,9 @@ class SubscribeStream:
 
     The underlying call is opened, and the initial `SubscribeRequest` written, on `__aenter__`.
     Leaving the `async with` block - including via `break` or an exception - cancels the call.
+
+    A poll-mode stream (`mode="poll"`) is driven with `await stream.poll()` instead, which returns one
+    poll cycle's Notifications per call; iterating it raises `RuntimeError`.
     """
 
     def __init__(
@@ -283,6 +287,10 @@ class SubscribeStream:
             bool: False until the first Sync Response, permanently True afterwards
         """
         return self._synced
+
+    @property
+    def _is_poll_mode(self) -> bool:
+        return self._subscription_list.mode == SubscriptionList.Mode.Value("POLL")
 
     async def __aenter__(self) -> "SubscribeStream":
         """
@@ -322,10 +330,13 @@ class SubscribeStream:
             Notification: the next parsed Notification
 
         Raises:
-            RuntimeError: if the stream was never entered with `async with`, or if iteration is attempted
-              after the stream is closed
+            RuntimeError: if the stream is in poll Mode (use `poll()` instead), if the stream was never
+              entered with `async with`, or if iteration is attempted after the stream is closed
             AioRpcError: if the call's read() raises, or the target sends the deprecated error field
         """
+        if self._is_poll_mode:
+            raise RuntimeError("A poll-mode SubscribeStream cannot be iterated; use 'await stream.poll()' instead")
+
         if not self._entered:
             raise RuntimeError("SubscribeStream must be entered with 'async with' before it can be iterated")
 
@@ -343,6 +354,51 @@ class SubscribeStream:
             elif which == "sync_response":
                 self._synced = True
                 continue
+            elif which == "error":
+                logger.warning(f"Subscribe response carried a deprecated error: {response.error.message}")
+                raise _build_stream_error(response.error)
+
+    async def poll(self) -> list[Notification]:
+        """
+        Trigger one poll cycle on a poll-mode stream and return its Notifications
+
+        Writes a Poll request, then reads until the next Sync Response. The returned list is exactly that
+        cycle's Notifications; the Sync Response itself is not included. `synced` latches `True` on the
+        first cycle's Sync Response and stays `True` across later cycles.
+
+        Returns:
+            list[Notification]: the parsed Notifications the Target sent for this poll cycle
+
+        Raises:
+            RuntimeError: if the stream is not in poll Mode, was never entered with `async with`, or is
+              closed
+            AioRpcError: if the call's write() or read() raises, or the Target sends the deprecated error
+              field
+            EOFError: if the Target ends the stream before the poll cycle's Sync Response
+        """
+        if not self._is_poll_mode:
+            raise RuntimeError("poll() is only available on a poll-mode SubscribeStream; iterate it with 'async for'")
+
+        if not self._entered:
+            raise RuntimeError("SubscribeStream must be entered with 'async with' before it can be polled")
+
+        if self._closed:
+            raise RuntimeError("SubscribeStream is closed")
+
+        await self._call.write(SubscribeRequest(poll=Poll()))
+
+        notifications: list[Notification] = []
+        while True:
+            response = await self._call.read()
+            if response is GRPC_EOF:
+                raise EOFError("Subscribe stream ended before the poll cycle's Sync Response")
+
+            which = response.WhichOneof("response")
+            if which == "update":
+                notifications.append(parse_notification(response.update))
+            elif which == "sync_response":
+                self._synced = True
+                return notifications
             elif which == "error":
                 logger.warning(f"Subscribe response carried a deprecated error: {response.error.message}")
                 raise _build_stream_error(response.error)
