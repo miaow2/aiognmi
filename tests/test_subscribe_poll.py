@@ -230,7 +230,6 @@ def test_stream_ending_before_sync_response_raises_out_of_poll(
     ],
 )
 @pytest.mark.parametrize("per_path", [False, True], ids=["method_level", "per_path"])
-@pytest.mark.skip(reason="needs 04 warn helper")
 def test_stream_only_option_under_poll_warns_but_still_sends_request(
     make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
     caplog: pytest.LogCaptureFixture,

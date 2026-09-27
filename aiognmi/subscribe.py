@@ -244,6 +244,38 @@ def _build_stream_error(error: SubscribeError) -> AioRpcError:
     )
 
 
+def warn_on_ignored_stream_options(subscription_list: SubscriptionList) -> None:
+    """
+    Log a warning if any Subscription sets a stream-only option under a non-stream Mode
+
+    `stream_mode`, `sample_interval`, `heartbeat_interval`, and `suppress_redundant` are only
+    meaningful under `mode="stream"`; the Target ignores them under `once` and `poll`. The request is
+    still sent unchanged - this only tells the caller why the setting will have no effect.
+
+    Args:
+        subscription_list: the built SubscriptionList to inspect
+    """
+    if subscription_list.mode == SubscriptionList.Mode.Value("STREAM"):
+        return
+
+    ignored = []
+    subscriptions = subscription_list.subscription
+    if any(s.mode != SubscriptionMode.Value("TARGET_DEFINED") for s in subscriptions):
+        ignored.append("stream_mode")
+    if any(s.sample_interval for s in subscriptions):
+        ignored.append("sample_interval")
+    if any(s.heartbeat_interval for s in subscriptions):
+        ignored.append("heartbeat_interval")
+    if any(s.suppress_redundant for s in subscriptions):
+        ignored.append("suppress_redundant")
+
+    if ignored:
+        mode = SubscriptionList.Mode.Name(subscription_list.mode).lower()
+        logger.warning(
+            f"{', '.join(ignored)} only apply under mode=stream; the Target will ignore them under mode={mode}"
+        )
+
+
 class SubscribeStream:
     """
     An async context manager and async iterator over a gNMI Subscribe RPC

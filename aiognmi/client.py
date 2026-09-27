@@ -10,7 +10,7 @@ from google.protobuf.duration_pb2 import Duration
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
-from aiognmi.models import CapabilitiesResult, GetResult, SetResult
+from aiognmi.models import CapabilitiesResult, GetResult, Notification, SetResult, SubscribeResult
 from aiognmi.proto.gnmi.gnmi_pb2 import (
     CapabilityRequest,
     CapabilityResponse,
@@ -32,7 +32,7 @@ from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
     Extension,
 )
 from aiognmi.response import Response
-from aiognmi.subscribe import SubscribeStream, build_subscription_list
+from aiognmi.subscribe import SubscribeStream, build_subscription_list, warn_on_ignored_stream_options
 from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_notification
 
 logger = logging.getLogger(__name__)
@@ -470,7 +470,36 @@ class AsyncgNMIClient:
         Returns:
             SubscribeStream: stream ready to be entered with `async with`
         """
+        warn_on_ignored_stream_options(subscription_list)
+
         return SubscribeStream(self.stub, self.credentials, subscription_list, extensions)
+
+    def _pre_subscribe_once(self) -> Response:
+        """
+        Create Response object
+
+        Returns:
+            Response: new response object
+        """
+        logger.info(f"subscribe_once for {self.host} is requested")
+
+        return Response(target=self.target)
+
+    def _post_subscribe_once(self, notifications: list[Notification], response: Response) -> Response:
+        """
+        Record the Notifications drained from a once-Mode Subscribe stream
+
+        Args:
+            notifications: Notifications received before the target closed the stream
+            response: response object
+
+        Returns:
+            Response: response object with results
+        """
+        result = SubscribeResult(notifications=notifications)
+        response.record_response(notifications, result.dict())
+
+        return response
 
     async def get_capabilities(self) -> Response:
         """
@@ -712,3 +741,88 @@ class AsyncgNMIClient:
         )
 
         return self._post_subscribe(subscription_list, extensions)
+
+    async def subscribe_once(
+        self,
+        subscriptions: list[str | dict],
+        stream_mode: str | None = None,
+        sample_interval: int | float | None = None,
+        heartbeat_interval: int | float | None = None,
+        suppress_redundant: bool = False,
+        prefix: str | None = None,
+        target: str | None = None,
+        encoding: str | None = None,
+        updates_only: bool = False,
+        allow_aggregation: bool = False,
+        qos: int | None = None,
+        use_models: list[dict] | None = None,
+        extensions: list[Extension] | None = None,
+        depth: int | None = None,
+    ) -> Response:
+        """
+        Take a one-shot snapshot of a set of gNMI paths with a once-Mode Subscribe
+
+        The target sends every value once, then a Sync Response, then closes the stream; all
+        Notifications received before it closes are collected into the result. Like `get()`, RPC
+        errors are recorded on a failed `Response` instead of being raised. There is no `mode`
+        parameter: the Mode is always `once`. Every other option is passed through to `subscribe()`
+        unchanged.
+
+        Args:
+            subscriptions: list of items, each either an xpath string or a dict with keys `path`,
+              `stream_mode`, `sample_interval`, `heartbeat_interval`, `suppress_redundant`, exactly as
+              in `subscribe()`
+            stream_mode: default per-Subscription `stream_mode`. Only meaningful under `mode="stream"`;
+              the target ignores it here and a warning is logged
+            sample_interval: default sample interval in seconds. Ignored by the target under `once`;
+              a warning is logged
+            heartbeat_interval: default heartbeat interval in seconds. Ignored by the target under
+              `once`; a warning is logged
+            suppress_redundant: default `suppress_redundant` flag. Ignored by the target under `once`;
+              a warning is logged
+            prefix: prefix for paths, as in `subscribe()`
+            target: the name of the target carried in the prefix Path, as in `subscribe()`
+            encoding: requested encoding, as in `subscribe()`
+            updates_only: skip the initial dump, as in `subscribe()`
+            allow_aggregation: allow aggregated Notifications, as in `subscribe()`
+            qos: DSCP marking, as in `subscribe()`
+            use_models: schema models the target should use, as in `subscribe()`
+            extensions: prebuilt gNMI Extension protobuf messages, as in `subscribe()`
+            depth: maximum subtree depth appended as a Depth extension, as in `subscribe()`
+
+        Returns:
+            Response: response object whose result carries the Notifications
+
+        Raises:
+            ValueError: on the same invalid arguments as `subscribe()`
+        """
+        response = self._pre_subscribe_once()
+
+        stream = self.subscribe(
+            subscriptions=subscriptions,
+            mode="once",
+            stream_mode=stream_mode,
+            sample_interval=sample_interval,
+            heartbeat_interval=heartbeat_interval,
+            suppress_redundant=suppress_redundant,
+            prefix=prefix,
+            target=target,
+            encoding=encoding,
+            updates_only=updates_only,
+            allow_aggregation=allow_aggregation,
+            qos=qos,
+            use_models=use_models,
+            extensions=extensions,
+            depth=depth,
+        )
+        notifications = []
+        try:
+            async with stream:
+                async for notification in stream:
+                    notifications.append(notification)
+        except AioRpcError as e:
+            logger.error(e)
+            response.record_error(e)
+            return response
+
+        return self._post_subscribe_once(notifications, response)

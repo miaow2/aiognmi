@@ -31,6 +31,14 @@ class GetResult:
 
 
 @dataclass
+class SubscribeResult:
+    notifications: list[Notification] = field(default_factory=list)
+
+    def dict(self) -> dict:
+        return {"notifications": [n.dict() for n in self.notifications]}
+
+
+@dataclass
 class SetResult(BaseDataClass):
     timestamp: int | None = None
     prefix: str | None = None
