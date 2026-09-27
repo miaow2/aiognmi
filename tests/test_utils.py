@@ -1,9 +1,20 @@
 import json
 
 import pytest
+from google.protobuf.any_pb2 import Any
 
-from aiognmi.proto.gnmi.gnmi_pb2 import Path, PathElem, TypedValue, Update
-from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, get_origin, parse_key_value, split_path
+from aiognmi.models import Notification
+from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
+from aiognmi.proto.gnmi.gnmi_pb2 import Path, PathElem, ScalarArray, TypedValue, Update
+from aiognmi.utils import (
+    create_gnmi_path,
+    create_update_obj,
+    create_xpath,
+    get_origin,
+    parse_key_value,
+    parse_notification,
+    split_path,
+)
 
 
 @pytest.mark.parametrize(
@@ -263,3 +274,103 @@ def test_create_xpath(path: Path, expected: str) -> None:
 )
 def test_create_update_obj(data: list, encoding: int, expected: list) -> None:
     assert create_update_obj(data, encoding) == expected
+
+
+def _path(name: str) -> Path:
+    return Path(elem=[PathElem(name=name)])
+
+
+_any_value = Any(type_url="type.googleapis.com/test.Value", value=b"payload")
+_leaflist_value = ScalarArray(element=[TypedValue(int_val=1), TypedValue(int_val=2)])
+
+
+@pytest.mark.parametrize(
+    "notification, expected",
+    [
+        (ProtoNotification(), Notification(timestamp=0)),
+        (ProtoNotification(timestamp=123456789), Notification(timestamp=123456789)),
+        (ProtoNotification(prefix=_path("interfaces")), Notification(timestamp=0, prefix="interfaces")),
+        (ProtoNotification(atomic=True), Notification(timestamp=0, atomic=True)),
+        (ProtoNotification(atomic=False), Notification(timestamp=0, atomic=None)),
+        (
+            ProtoNotification(delete=[_path("deleted"), _path("removed")]),
+            Notification(timestamp=0, deletes=["deleted", "removed"]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("str"), val=TypedValue(string_val="hello"))]),
+            Notification(timestamp=0, updates=[{"path": "str", "val": "hello"}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("int"), val=TypedValue(int_val=-42))]),
+            Notification(timestamp=0, updates=[{"path": "int", "val": -42}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("bool"), val=TypedValue(bool_val=True))]),
+            Notification(timestamp=0, updates=[{"path": "bool", "val": True}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("bytes"), val=TypedValue(bytes_val=b"raw-bytes"))]),
+            Notification(timestamp=0, updates=[{"path": "bytes", "val": b"raw-bytes"}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("double"), val=TypedValue(double_val=1.5))]),
+            Notification(timestamp=0, updates=[{"path": "double", "val": 1.5}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("leaflist"), val=TypedValue(leaflist_val=_leaflist_value))]),
+            Notification(timestamp=0, updates=[{"path": "leaflist", "val": _leaflist_value}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("any"), val=TypedValue(any_val=_any_value))]),
+            Notification(timestamp=0, updates=[{"path": "any", "val": _any_value}]),
+        ),
+        (
+            ProtoNotification(
+                update=[Update(path=_path("json"), val=TypedValue(json_val=json.dumps({"a": 1}).encode("utf-8")))]
+            ),
+            Notification(timestamp=0, updates=[{"path": "json", "val": {"a": 1}}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("json_raw"), val=TypedValue(json_val=b"not-json"))]),
+            Notification(timestamp=0, updates=[{"path": "json_raw", "val": b"not-json"}]),
+        ),
+        (
+            ProtoNotification(
+                update=[
+                    Update(path=_path("json_ietf"), val=TypedValue(json_ietf_val=json.dumps([1, 2]).encode("utf-8")))
+                ]
+            ),
+            Notification(timestamp=0, updates=[{"path": "json_ietf", "val": [1, 2]}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("ascii"), val=TypedValue(ascii_val="plain text"))]),
+            Notification(timestamp=0, updates=[{"path": "ascii", "val": "plain text"}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("proto"), val=TypedValue(proto_bytes=b"encoded"))]),
+            Notification(timestamp=0, updates=[{"path": "proto", "val": b"encoded"}]),
+        ),
+        (
+            ProtoNotification(update=[Update(path=_path("dup"), val=TypedValue(int_val=1), duplicates=3)]),
+            Notification(timestamp=0, updates=[{"path": "dup", "val": 1, "duplicates": 3}]),
+        ),
+        (
+            ProtoNotification(
+                timestamp=42,
+                prefix=_path("interfaces"),
+                atomic=True,
+                update=[Update(path=_path("state"), val=TypedValue(string_val="up"))],
+                delete=[_path("removed")],
+            ),
+            Notification(
+                timestamp=42,
+                prefix="interfaces",
+                atomic=True,
+                updates=[{"path": "state", "val": "up"}],
+                deletes=["removed"],
+            ),
+        ),
+    ],
+)
+def test_parse_notification(notification: ProtoNotification, expected: Notification) -> None:
+    assert parse_notification(notification) == expected

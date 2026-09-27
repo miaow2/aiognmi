@@ -2,6 +2,8 @@ import json
 import re
 from typing import Any
 
+from aiognmi.models import Notification
+from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
 from aiognmi.proto.gnmi.gnmi_pb2 import Path, TypedValue, Update
 
 
@@ -184,6 +186,39 @@ def parse_typed_value(value: TypedValue) -> Any:
         return value.ascii_val
     elif value.HasField("proto_bytes"):
         return value.proto_bytes
+
+
+def parse_notification(notification: ProtoNotification) -> Notification:
+    """
+    Parse a gNMI Notification message into a Notification dataclass
+
+    Args:
+        notification: gNMI Notification protobuf message
+
+    Returns:
+        Notification: dataclass with timestamp, prefix, updates, deletes and atomic populated
+    """
+    note = Notification(
+        timestamp=notification.timestamp if notification.timestamp else 0,
+        prefix=create_xpath(notification.prefix) if notification.prefix else None,
+        atomic=notification.atomic if notification.atomic else None,
+    )
+    if notification.update:
+        for msg in notification.update:
+            data = {}
+            data["path"] = create_xpath(msg.path) if msg.path else None
+            if msg.val:
+                data["val"] = parse_typed_value(msg.val)
+            if msg.duplicates:
+                data["duplicates"] = msg.duplicates
+            note.updates.append(data)
+
+    if notification.delete:
+        for path in notification.delete:
+            if xpath := create_xpath(path):
+                note.deletes.append(xpath)
+
+    return note
 
 
 def create_update_obj(data: list[dict], encoding: int) -> list[Update]:

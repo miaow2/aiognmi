@@ -10,7 +10,7 @@ from google.protobuf.duration_pb2 import Duration
 from grpc import ssl_channel_credentials
 from grpc.aio import AioRpcError, insecure_channel, secure_channel
 
-from aiognmi.models import CapabilitiesResult, GetResult, Notification, SetResult
+from aiognmi.models import CapabilitiesResult, GetResult, SetResult
 from aiognmi.proto.gnmi.gnmi_pb2 import (
     CapabilityRequest,
     CapabilityResponse,
@@ -31,7 +31,7 @@ from aiognmi.proto.gnmi_ext.gnmi_ext_pb2 import (
     Extension,
 )
 from aiognmi.response import Response
-from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_typed_value
+from aiognmi.utils import create_gnmi_path, create_update_obj, create_xpath, parse_notification
 
 logger = logging.getLogger(__name__)
 
@@ -371,29 +371,7 @@ class AsyncgNMIClient:
         result = GetResult()
         if raw_response.notification:
             for notification in raw_response.notification:
-                note = Notification(
-                    **{
-                        "timestamp": notification.timestamp if notification.timestamp else 0,
-                        "prefix": create_xpath(notification.prefix) if notification.prefix else None,
-                        "atomic": notification.atomic if notification.atomic else None,
-                    }
-                )
-                if notification.update:
-                    for msg in notification.update:
-                        data = {}
-                        data["path"] = create_xpath(msg.path) if msg.path else None
-                        if msg.val:
-                            data["val"] = parse_typed_value(msg.val)
-                        if msg.duplicates:
-                            data["duplicates"] = msg.duplicates
-                        note.updates.append(data)
-
-                if notification.delete:
-                    for path in notification.delete:
-                        if xpath := create_xpath(path):
-                            note.deletes.append(xpath)
-
-                result.notifications.append(note)
+                result.notifications.append(parse_notification(notification))
 
         response.record_response(raw_response, result.dict())
 
