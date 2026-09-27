@@ -20,7 +20,7 @@ code path would mislead every future reader, and renaming `GetResult` would brea
 
 **Blocked by:** 02, 03 (03 defines the stream-only options this Mode must warn about)
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `subscribe_once()` returns a `Response` whose result carries the Notifications
 - [ ] On an RPC error it returns a failed `Response` with the error recorded, rather than raising —
@@ -31,3 +31,13 @@ code path would mislead every future reader, and renaming `GetResult` would brea
 - [ ] Passing `stream_mode`, `sample_interval`, `heartbeat_interval`, or `suppress_redundant` under
       `once` logs a warning that the Target will ignore it, but still sends the request
 - [ ] `ruff format`, `ruff check`, and the full suite pass on Python 3.12 and 3.13
+
+## Comments
+
+- Implemented in 777649e. `subscribe_once()` also accepts and forwards every ticket-06 option (prefix, target,
+  encoding, updates_only, allow_aggregation, qos, use_models, extensions, depth).
+- The ignored-stream-options warning lives in `warn_on_ignored_stream_options()` (subscribe module), called from
+  `_post_subscribe`, so it covers both `once` and `poll`. It fires on non-default values in the built request, so an
+  explicit `stream_mode="target_defined"` or an interval of `0` does not warn.
+- `Response.raw_result` holds the parsed `Notification` list, not raw `SubscribeResponse` messages (unlike `get()`).
+- Drains until the Target closes the stream (EOF), per the spec; bound it with `asyncio.timeout` if a Target might not.

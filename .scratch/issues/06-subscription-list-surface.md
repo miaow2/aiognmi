@@ -22,7 +22,7 @@ the surprising case worth calling out.
 
 **Blocked by:** 02
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] `prefix`, `target`, and `encoding` reach the request the way `get()` handles them, reusing the
       existing encoding resolution
@@ -32,3 +32,12 @@ the surprising case worth calling out.
       `test_get_depth_appends_to_caller_extensions`
 - [ ] Negative or non-integer `qos` and `depth` raise `ValueError`, rejecting `bool`
 - [ ] `ruff format`, `ruff check`, and the full suite pass on Python 3.12 and 3.13
+
+## Comments
+
+- Implemented in af299ba. `get()`'s depth handling moved verbatim into `_build_extensions()` in the client module and
+  is shared by `get()` and `subscribe()`.
+- `extensions`/`depth` go on `SubscribeRequest.extension` (where the proto defines them), passed through
+  `SubscribeStream`'s new optional `extensions` argument.
+- `qos` rejects negative, non-integer, and `bool` values; no upper bound (DSCP max 63) is enforced.
+- The `updates_only`/`synced` caveat is already in the `subscribe()` docstring.
