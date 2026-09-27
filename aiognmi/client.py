@@ -389,7 +389,7 @@ class AsyncgNMIClient:
                         note.updates.append(data)
 
                 if notification.delete:
-                    for path in notification.update:
+                    for path in notification.delete:
                         if xpath := create_xpath(path):
                             note.deletes.append(xpath)
 

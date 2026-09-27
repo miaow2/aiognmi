@@ -1,10 +1,13 @@
 import asyncio
 from collections.abc import Callable
+from unittest.mock import AsyncMock
 
 import pytest
 
 from aiognmi import AsyncgNMIClient, Extension, ExtensionID, RegisteredExtension
-from aiognmi.proto.gnmi.gnmi_pb2 import GetRequest, SetRequest
+from aiognmi.proto.gnmi.gnmi_pb2 import GetRequest, GetResponse, SetRequest
+from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
+from aiognmi.utils import create_gnmi_path, create_xpath
 
 
 def _make_extension(payload: bytes = b"payload") -> Extension:
@@ -59,6 +62,20 @@ def test_get_rejects_invalid_depth(make_client: Callable[..., AsyncgNMIClient], 
 
     with pytest.raises(ValueError, match="depth must be a non-negative integer"):
         asyncio.run(client.get(depth=depth))
+
+
+def test_get_response_parses_notification_deletes(client_with_mock_get: AsyncgNMIClient) -> None:
+    delete_path = create_gnmi_path("/interfaces/interface[name=eth0]/state/oper-status")
+    update_path = create_gnmi_path("/interfaces/interface[name=eth0]/state/admin-status")
+    notification = ProtoNotification(timestamp=1234, delete=[delete_path])
+    notification.update.add(path=update_path)
+    client_with_mock_get.stub.Get = AsyncMock(return_value=GetResponse(notification=[notification]))
+
+    response = asyncio.run(client_with_mock_get.get(paths=["/interfaces"]))
+
+    assert not response.failed
+    assert response.result["notifications"][0]["deletes"] == [create_xpath(delete_path)]
+    assert response.result["notifications"][0]["updates"][0]["path"] == create_xpath(update_path)
 
 
 def test_set_request_includes_extensions(client_with_mock_set: AsyncgNMIClient) -> None:
