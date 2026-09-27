@@ -151,3 +151,17 @@ uv run --extra test pytest
 - Do not commit local environments, caches, build outputs, or distribution files. `.gitignore` already excludes `.venv/`, `dist/`, `build/`, `*.egg-info/`, `.pytest_cache/`, and `.ruff_cache/`.
 - Keep generated files and vendored protobuf sources together under `aiognmi/proto/`.
 - Keep documentation changes in `README.md` for human-facing usage and `AGENTS.md` for coding-agent workflow guidance.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.scratch/<feature-slug>/` in this repo, committed alongside the code. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), recorded as a `Status:` line in each issue file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
