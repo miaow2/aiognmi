@@ -1,4 +1,5 @@
 import logging
+import math
 
 import grpc
 from grpc.aio import EOF as GRPC_EOF
@@ -6,7 +7,7 @@ from grpc.aio import AioRpcError, Metadata
 
 from aiognmi.models import Notification
 from aiognmi.proto.gnmi.gnmi_pb2 import Error as SubscribeError
-from aiognmi.proto.gnmi.gnmi_pb2 import Path, SubscribeRequest, Subscription, SubscriptionList
+from aiognmi.proto.gnmi.gnmi_pb2 import Path, SubscribeRequest, Subscription, SubscriptionList, SubscriptionMode
 from aiognmi.proto.gnmi.gnmi_pb2_grpc import gNMIStub
 from aiognmi.utils import create_gnmi_path, parse_notification
 
@@ -35,24 +36,143 @@ def _get_subscription_list_mode(mode: str | None) -> int:
         return SubscriptionList.Mode.Value("STREAM")
 
 
-def build_subscription_list(prefix: Path, paths: list[str], mode: str | None, encoding: int) -> SubscriptionList:
+def _get_subscription_mode(stream_mode: str | None) -> int:
     """
-    Build a `SubscriptionList` from bare path strings and the default Stream Mode
+    Map a public `stream_mode` string to a `SubscriptionMode` value
+
+    Args:
+        stream_mode: how one Subscription triggers - "target_defined" (default), "on_change", or
+          "sample", case-insensitive. Only meaningful under `mode="stream"`
+
+    Returns:
+        int: the matching `SubscriptionMode` value; falls back to TARGET_DEFINED on an unknown string
+    """
+    if stream_mode is None:
+        return SubscriptionMode.Value("TARGET_DEFINED")
+
+    try:
+        return SubscriptionMode.Value(stream_mode.upper())
+    except ValueError:
+        logger.warning(f"Stream mode {stream_mode} is not supported in Subscription, setting target_defined")
+        return SubscriptionMode.Value("TARGET_DEFINED")
+
+
+def _seconds_to_nanoseconds(seconds: int | float | None, name: str) -> int:
+    """
+    Validate a seconds interval and convert it to nanoseconds for a Subscription field
+
+    Args:
+        seconds: interval in seconds as `int` or `float` (fractional seconds are allowed); `None`
+          leaves the underlying proto field unset
+        name: parameter name used in the raised `ValueError` message
+
+    Returns:
+        int: nanoseconds, computed with `round()` so fractional seconds are not truncated; `0` if
+          `seconds` is `None`
+
+    Raises:
+        ValueError: if `seconds` is a `bool`, not a real number, negative, or a non-finite float
+          (`nan`/`inf`)
+    """
+    if seconds is None:
+        return 0
+
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+        raise ValueError(f"{name} must be a non-negative number of seconds")
+
+    return round(seconds * 1_000_000_000)
+
+
+def _build_subscription(
+    item: str | dict,
+    stream_mode: str | None,
+    sample_interval: int | float | None,
+    heartbeat_interval: int | float | None,
+    suppress_redundant: bool,
+) -> Subscription:
+    """
+    Build a single `Subscription` from a bare path string or a per-path options dict
+
+    Args:
+        item: an xpath string, or a dict with keys `path`, `stream_mode`, `sample_interval`,
+          `heartbeat_interval`, `suppress_redundant`. A dict key that is omitted (or a bare string)
+          falls back to the corresponding method-level default argument below
+        stream_mode: method-level default `stream_mode`
+        sample_interval: method-level default `sample_interval` in seconds
+        heartbeat_interval: method-level default `heartbeat_interval` in seconds
+        suppress_redundant: method-level default `suppress_redundant`
+
+    Returns:
+        Subscription: the built Subscription message
+
+    Raises:
+        ValueError: if `item` is a dict missing `path`, or if the resolved `sample_interval`/
+          `heartbeat_interval` is invalid (see `_seconds_to_nanoseconds`)
+    """
+    if isinstance(item, dict):
+        if not item.get("path"):
+            raise ValueError("subscriptions dict item must include a 'path' key")
+        path = item["path"]
+        stream_mode = item.get("stream_mode", stream_mode)
+        sample_interval = item.get("sample_interval", sample_interval)
+        heartbeat_interval = item.get("heartbeat_interval", heartbeat_interval)
+        suppress_redundant = item.get("suppress_redundant", suppress_redundant)
+    else:
+        path = item
+
+    return Subscription(
+        path=create_gnmi_path(path),
+        mode=_get_subscription_mode(stream_mode),
+        sample_interval=_seconds_to_nanoseconds(sample_interval, "sample_interval"),
+        heartbeat_interval=_seconds_to_nanoseconds(heartbeat_interval, "heartbeat_interval"),
+        suppress_redundant=bool(suppress_redundant),
+    )
+
+
+def build_subscription_list(
+    prefix: Path,
+    subscriptions: list[str | dict],
+    mode: str | None,
+    encoding: int,
+    stream_mode: str | None = None,
+    sample_interval: int | float | None = None,
+    heartbeat_interval: int | float | None = None,
+    suppress_redundant: bool = False,
+) -> SubscriptionList:
+    """
+    Build a `SubscriptionList` from path strings/dicts and method-level per-Subscription defaults
 
     Args:
         prefix: gNMI Path to use as the SubscriptionList prefix
-        paths: list of xpath strings to subscribe to
+        subscriptions: list of items, each either an xpath string or a dict with keys `path`,
+          `stream_mode`, `sample_interval`, `heartbeat_interval`, `suppress_redundant`. A bare
+          string inherits every default below; a dict overrides only the keys it sets, and must
+          always include `path`
         mode: how the request is delivered - "stream" (default), "once", or "poll"
         encoding: resolved gNMI Encoding value
+        stream_mode: default per-Subscription trigger - "target_defined" (default), "on_change", or
+          "sample" - for any item that omits its own `stream_mode`
+        sample_interval: default sample interval in seconds (`int` or `float`; fractional seconds
+          are allowed), converted internally to nanoseconds, for any item that omits its own
+        heartbeat_interval: default heartbeat interval in seconds (`int` or `float`; fractional
+          seconds are allowed), converted internally to nanoseconds, for any item that omits its own
+        suppress_redundant: default `suppress_redundant` flag for any item that omits its own
 
     Returns:
         SubscriptionList: the built SubscriptionList message
+
+    Raises:
+        ValueError: if a dict item is missing `path`, or if a `sample_interval`/`heartbeat_interval`
+          (method-level or per-item) is negative, non-numeric, a `bool`, or a non-finite float
     """
-    subscriptions = [Subscription(path=create_gnmi_path(path)) for path in paths]
+    subscription_list = [
+        _build_subscription(item, stream_mode, sample_interval, heartbeat_interval, suppress_redundant)
+        for item in subscriptions
+    ]
 
     return SubscriptionList(
         prefix=prefix,
-        subscription=subscriptions,
+        subscription=subscription_list,
         mode=_get_subscription_list_mode(mode),
         encoding=encoding,
     )

@@ -601,23 +601,48 @@ class AsyncgNMIClient:
 
         return self._post_set(gnmi_response, response)
 
-    def subscribe(self, subscriptions: list[str], mode: str | None = None) -> SubscribeStream:
+    def subscribe(
+        self,
+        subscriptions: list[str | dict],
+        mode: str | None = None,
+        stream_mode: str | None = None,
+        sample_interval: int | float | None = None,
+        heartbeat_interval: int | float | None = None,
+        suppress_redundant: bool = False,
+    ) -> SubscribeStream:
         """
         Subscribe to a set of gNMI paths on the target
 
-        This is a plain, non-async method: nothing network-related happens here. The gRPC call is
-        opened, and the initial SubscribeRequest written, when the returned stream is entered with
+        This is a plain, non-async method: nothing network-related happens here. All validation
+        below runs synchronously and raises before any gRPC call is opened. The gRPC call is opened,
+        and the initial SubscribeRequest written, when the returned stream is entered with
         `async with`.
 
         Args:
-            subscriptions: list of path strings to subscribe to
+            subscriptions: list of items, each either an xpath string or a dict with keys `path`,
+              `stream_mode`, `sample_interval`, `heartbeat_interval`, `suppress_redundant`. A bare
+              string inherits the method-level defaults below; a dict overrides only the keys it
+              sets, and must always include `path`
             mode: how the whole request is delivered - "stream" (default), "once", or "poll"
+            stream_mode: default per-Subscription trigger - "target_defined" (default), "on_change",
+              or "sample" - for any item that omits its own `stream_mode`. Only meaningful under
+              `mode="stream"`
+            sample_interval: default sample interval in seconds (`int` or `float`; fractional
+              seconds are allowed, e.g. `0.5`), converted internally to nanoseconds, for any item
+              that omits its own
+            heartbeat_interval: default heartbeat interval in seconds (`int` or `float`; fractional
+              seconds are allowed), converted internally to nanoseconds, for any item that omits its
+              own
+            suppress_redundant: default `suppress_redundant` flag applied per Subscription, for any
+              item that omits its own
 
         Returns:
             SubscribeStream: async context manager and async iterator over Notifications
 
         Raises:
-            ValueError: if subscriptions is missing or empty
+            ValueError: if subscriptions is missing or empty, if a dict item is missing `path`, or
+              if a `sample_interval`/`heartbeat_interval` (method-level or per-item) is negative,
+              non-numeric, a `bool`, or a non-finite float
         """
         self._pre_subscribe()
 
@@ -627,9 +652,13 @@ class AsyncgNMIClient:
         prefix = create_gnmi_path(None, self.target)
         subscription_list = build_subscription_list(
             prefix=prefix,
-            paths=subscriptions,
+            subscriptions=subscriptions,
             mode=mode,
             encoding=self.get_encoding(None),
+            stream_mode=stream_mode,
+            sample_interval=sample_interval,
+            heartbeat_interval=heartbeat_interval,
+            suppress_redundant=suppress_redundant,
         )
 
         return self._post_subscribe(subscription_list)

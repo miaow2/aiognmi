@@ -9,7 +9,13 @@ from aiognmi import AsyncgNMIClient, SubscribeStream
 from aiognmi.models import Notification as NotificationModel
 from aiognmi.proto.gnmi.gnmi_pb2 import Error as ProtoError
 from aiognmi.proto.gnmi.gnmi_pb2 import Notification as ProtoNotification
-from aiognmi.proto.gnmi.gnmi_pb2 import SubscribeRequest, SubscribeResponse, SubscriptionList
+from aiognmi.proto.gnmi.gnmi_pb2 import (
+    SubscribeRequest,
+    SubscribeResponse,
+    Subscription,
+    SubscriptionList,
+    SubscriptionMode,
+)
 from aiognmi.utils import create_gnmi_path, parse_notification
 
 
@@ -103,6 +109,220 @@ def test_subscribe_unknown_mode_warns_and_falls_back_to_stream(
 
     assert call.written[0].subscribe.mode == SubscriptionList.Mode.Value("STREAM")
     assert any("bogus" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("stream_mode", "expected"),
+    [
+        (None, SubscriptionMode.Value("TARGET_DEFINED")),
+        ("target_defined", SubscriptionMode.Value("TARGET_DEFINED")),
+        ("TARGET_DEFINED", SubscriptionMode.Value("TARGET_DEFINED")),
+        ("on_change", SubscriptionMode.Value("ON_CHANGE")),
+        ("On_Change", SubscriptionMode.Value("ON_CHANGE")),
+        ("sample", SubscriptionMode.Value("SAMPLE")),
+        ("Sample", SubscriptionMode.Value("SAMPLE")),
+    ],
+)
+def test_subscribe_stream_mode_maps_to_subscription_mode(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], stream_mode: str | None, expected: int
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(subscriptions=["/interfaces"], stream_mode=stream_mode):
+            pass
+
+    asyncio.run(_run())
+
+    assert call.written[0].subscribe.subscription[0].mode == expected
+
+
+def test_subscribe_unknown_stream_mode_warns_and_falls_back_to_target_defined(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(subscriptions=["/interfaces"], stream_mode="bogus"):
+            pass
+
+    with caplog.at_level("WARNING"):
+        asyncio.run(_run())
+
+    assert call.written[0].subscribe.subscription[0].mode == SubscriptionMode.Value("TARGET_DEFINED")
+    assert any("bogus" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected_nanoseconds"),
+    [
+        (None, 0),
+        (0, 0),
+        (10, 10_000_000_000),
+        (0.5, 500_000_000),
+        (0.3, 300_000_000),
+    ],
+)
+def test_subscribe_sample_interval_converts_seconds_to_nanoseconds(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+    seconds: int | float | None,
+    expected_nanoseconds: int,
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(subscriptions=["/interfaces"], stream_mode="sample", sample_interval=seconds):
+            pass
+
+    asyncio.run(_run())
+
+    assert call.written[0].subscribe.subscription[0].sample_interval == expected_nanoseconds
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected_nanoseconds"),
+    [
+        (None, 0),
+        (0, 0),
+        (10, 10_000_000_000),
+        (0.5, 500_000_000),
+        (0.3, 300_000_000),
+    ],
+)
+def test_subscribe_heartbeat_interval_converts_seconds_to_nanoseconds(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+    seconds: int | float | None,
+    expected_nanoseconds: int,
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(subscriptions=["/interfaces"], heartbeat_interval=seconds):
+            pass
+
+    asyncio.run(_run())
+
+    assert call.written[0].subscribe.subscription[0].heartbeat_interval == expected_nanoseconds
+
+
+@pytest.mark.parametrize("suppress_redundant", [True, False])
+def test_subscribe_suppress_redundant_reaches_subscription(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]], suppress_redundant: bool
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(subscriptions=["/interfaces"], suppress_redundant=suppress_redundant):
+            pass
+
+    asyncio.run(_run())
+
+    assert call.written[0].subscribe.subscription[0].suppress_redundant is suppress_redundant
+
+
+def test_subscribe_dict_overrides_method_level_defaults(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(
+            subscriptions=[
+                {
+                    "path": "/interfaces/interface[name=eth0]/state/counters",
+                    "stream_mode": "sample",
+                    "sample_interval": 10,
+                }
+            ],
+            stream_mode="on_change",
+            sample_interval=5,
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    subscription = call.written[0].subscribe.subscription[0]
+    assert subscription.mode == SubscriptionMode.Value("SAMPLE")
+    assert subscription.sample_interval == 10_000_000_000
+
+
+def test_subscribe_string_items_inherit_method_level_defaults(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(
+            subscriptions=["/interfaces/interface[name=eth0]/state/oper-status"],
+            stream_mode="on_change",
+            suppress_redundant=True,
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    subscription = call.written[0].subscribe.subscription[0]
+    assert subscription.mode == SubscriptionMode.Value("ON_CHANGE")
+    assert subscription.suppress_redundant is True
+
+
+def test_subscribe_mixed_list_of_strings_and_dicts(
+    make_subscribe_client: Callable[..., tuple[AsyncgNMIClient, object]],
+) -> None:
+    client, call = make_subscribe_client([])
+
+    async def _run() -> None:
+        async with client.subscribe(
+            subscriptions=[
+                {
+                    "path": "/interfaces/interface[name=eth0]/state/counters",
+                    "stream_mode": "sample",
+                    "sample_interval": 10,
+                },
+                "/interfaces/interface[name=eth0]/state/oper-status",
+            ],
+            stream_mode="on_change",
+        ):
+            pass
+
+    asyncio.run(_run())
+
+    subscriptions: list[Subscription] = list(call.written[0].subscribe.subscription)
+    assert subscriptions[0].mode == SubscriptionMode.Value("SAMPLE")
+    assert subscriptions[0].sample_interval == 10_000_000_000
+    assert subscriptions[1].mode == SubscriptionMode.Value("ON_CHANGE")
+
+
+def test_subscribe_dict_missing_path_raises_value_error(
+    make_client: Callable[..., AsyncgNMIClient],
+) -> None:
+    client = make_client(insecure=True)
+
+    with pytest.raises(ValueError, match="path"):
+        client.subscribe(subscriptions=[{"stream_mode": "sample", "sample_interval": 10}])
+
+
+@pytest.mark.parametrize("interval", [-1, -0.5, "10", True, float("nan"), float("inf")])
+@pytest.mark.parametrize("argument", ["sample_interval", "heartbeat_interval"])
+def test_subscribe_rejects_invalid_interval_at_method_level(
+    make_client: Callable[..., AsyncgNMIClient], argument: str, interval: object
+) -> None:
+    client = make_client(insecure=True)
+
+    with pytest.raises(ValueError, match=f"{argument} must be a non-negative number of seconds"):
+        client.subscribe(subscriptions=["/interfaces"], **{argument: interval})
+
+
+@pytest.mark.parametrize("interval", [-1, -0.5, "10", True, float("nan"), float("inf")])
+@pytest.mark.parametrize("argument", ["sample_interval", "heartbeat_interval"])
+def test_subscribe_rejects_invalid_interval_per_dict_item(
+    make_client: Callable[..., AsyncgNMIClient], argument: str, interval: object
+) -> None:
+    client = make_client(insecure=True)
+
+    with pytest.raises(ValueError, match=f"{argument} must be a non-negative number of seconds"):
+        client.subscribe(subscriptions=[{"path": "/interfaces", argument: interval}])
 
 
 def _notification_response(path: str, value: str) -> SubscribeResponse:
