@@ -678,6 +678,10 @@ class AsyncgNMIClient:
         and the initial SubscribeRequest written, when the returned stream is entered with
         `async with`.
 
+        Unlike the other client methods, RPC errors are not recorded on a `Response`: iterating the
+        stream, or calling `poll()` on it, raises `AioRpcError` so a dead stream cannot be mistaken
+        for one that ended normally (see docs/adr/0001-subscribe-stream-raises.md).
+
         Args:
             subscriptions: list of items, each either an xpath string or a dict with keys `path`,
               `stream_mode`, `sample_interval`, `heartbeat_interval`, `suppress_redundant`. A bare

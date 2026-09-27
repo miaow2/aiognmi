@@ -15,7 +15,7 @@ This Python library provides an efficient and lightweight gNMI client implementa
 * Capabilities
 * Get
 * Set
-* Subscribe (under development)
+* Subscribe
 
 ### Tested on:
 
@@ -177,6 +177,103 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+```
+
+`Subscribe` RPC
+
+Subscribe supports all three gNMI Modes: `stream` (the Target pushes Notifications until you stop), `once` (the
+Target sends one dump and closes), and `poll` (the Target sends a dump each time you ask).
+
+Stream Mode with `async for`:
+
+```python
+import asyncio
+
+from aiognmi import AsyncgNMIClient
+
+
+async def main():
+    async with AsyncgNMIClient(host="test-1", port=6030, username="admin", password="admin", insecure=True) as client:
+        async with client.subscribe(
+            subscriptions=[
+                {"path": "/interfaces/interface[name=Management0]/state/counters",
+                 "stream_mode": "sample", "sample_interval": 10},
+                {"path": "/interfaces/interface[name=Management0]/state/oper-status",
+                 "stream_mode": "on_change"},
+            ],
+        ) as stream:
+            async for notification in stream:
+                if stream.synced:
+                    print(notification.dict())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+`subscribe()` is a plain (non-async) method; the gRPC call opens when you enter `async with`, and leaving the block,
+including via `break`, cancels it. Each item in `subscriptions` is either a path string or a dict with `path`,
+`stream_mode`, `sample_interval`, `heartbeat_interval`, and `suppress_redundant`. The method-level arguments of the
+same names are defaults for any key a dict leaves out.
+
+`sample_interval` and `heartbeat_interval` are in **seconds** (`int` or `float`), not the nanoseconds used on the
+wire; the client converts them.
+
+`stream.synced` is `False` until the Target's first Sync Response and stays `True` after it. With
+`updates_only=True` the Target skips the initial dump, so `synced` becomes `True` almost immediately.
+
+`subscribe()` also accepts `prefix`, `target`, `encoding`, `updates_only`, `allow_aggregation`, `qos`, `use_models`,
+`extensions`, and `depth`; `prefix`, `target`, `encoding`, `extensions`, and `depth` behave as they do in `get()`.
+
+Once Mode with `subscribe_once()`, which returns a `Response` just like `get()`:
+
+```python
+resp = await client.subscribe_once(subscriptions=["/interfaces/interface[name=Management0]"])
+
+if not resp.failed:
+    print(resp.result)
+```
+
+Poll Mode with `.poll()`, which sends a Poll request and returns that cycle's list of Notifications:
+
+```python
+async with client.subscribe(subscriptions=["/interfaces"], mode="poll") as stream:
+    while True:
+        notifications = await stream.poll()
+        print([n.dict() for n in notifications])
+        await asyncio.sleep(60)
+```
+
+A poll-mode stream cannot be iterated with `async for`; use `.poll()`. Options that only apply to `stream` Mode
+(`stream_mode`, `sample_interval`, `heartbeat_interval`, `suppress_redundant`) are ignored by the Target under
+`once` and `poll`; the client logs a warning and still sends the request.
+
+### Subscribe errors, reconnects, and timeouts
+
+Unlike the other methods, iterating a stream or calling `.poll()` **raises** `grpc.aio.AioRpcError` when the
+subscription fails, so a dead stream is never mistaken for one that ended normally. `.poll()` raises `EOFError` if
+the Target closes the stream in the middle of a poll cycle. `subscribe_once()` does not raise; RPC errors are
+recorded on the failed `Response`, as with `get()`.
+
+Reconnect, retry, backoff, and read timeouts are deliberately left to the caller. A reconnect loop is a few lines:
+
+```python
+from grpc.aio import AioRpcError
+
+while True:
+    try:
+        async with client.subscribe(subscriptions=["/interfaces"]) as stream:
+            async for notification in stream:
+                print(notification.dict())
+    except AioRpcError:
+        await asyncio.sleep(5)
+```
+
+Use `asyncio.timeout` to bound how long you wait:
+
+```python
+async with asyncio.timeout(30):
+    resp = await client.subscribe_once(subscriptions=["/interfaces"])
 ```
 
 ## TLS

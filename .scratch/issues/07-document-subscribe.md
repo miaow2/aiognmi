@@ -26,7 +26,7 @@ Do not bump `__version__` and do not publish; only the README's supported-RPC li
 
 **Blocked by:** 03, 04, 05, 06
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] README has a Subscribe example for each of stream, once, and poll
 - [ ] README states intervals are in seconds
